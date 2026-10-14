@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Genus</title>
+<style>
+  :root { --bg:#fafaf7; --fg:#1d1d1b; --muted:#6b6b66; --card:#fff; --line:#e4e4de; --accent:#1f5fbf;
+          --der:#1f5fbf; --die:#c0392b; --das:#2e8b57; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#161615; --fg:#ececE6; --muted:#9a9a93; --card:#1f1f1d; --line:#33332f; --accent:#6ea4f0;
+            --der:#6ea4f0; --die:#ef7b6e; --das:#5fc48a; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:18px/1.4 system-ui,-apple-system,Segoe UI,sans-serif; }
+  main { max-width:560px; margin:0 auto; padding:48px 16px; }
+  h1 { font-size:20px; margin:0 0 20px; font-weight:600; }
+  input { width:100%; font:inherit; font-size:22px; padding:14px 16px; border-radius:12px;
+          border:1px solid var(--line); background:var(--card); color:var(--fg); }
+  input:focus { outline:2px solid var(--accent); border-color:transparent; }
+  .hint { color:var(--muted); font-size:14px; margin-top:8px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px;
+          padding:16px 18px; margin-top:16px; }
+  .word { font-size:30px; font-weight:600; }
+  .art-der { color:var(--der); } .art-die { color:var(--die); } .art-das { color:var(--das); }
+  .meta { color:var(--muted); font-size:14px; margin-top:4px; }
+  details.decl { margin-top:12px; }
+  details.decl summary { cursor:pointer; color:var(--accent); font-size:14px; }
+  table.decl { border-collapse:collapse; width:100%; margin-top:8px; font-size:16px; }
+  table.decl th { text-align:left; font-weight:500; color:var(--muted); font-size:13px;
+                  padding:4px 8px 4px 0; border-bottom:1px solid var(--line); }
+  table.decl td { padding:5px 8px 5px 0; border-bottom:1px solid var(--line); vertical-align:top; }
+  table.decl td.case { color:var(--muted); font-size:14px; white-space:nowrap; }
+  table.decl .alt { color:var(--muted); }
+  table.decl tr:last-child td { border-bottom:0; }
+  .note { margin-top:16px; color:var(--muted); font-size:15px; }
+  .chips { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+  .chip { border:1px solid var(--line); background:var(--card); color:var(--fg); border-radius:999px;
+          padding:6px 14px; font:inherit; font-size:16px; cursor:pointer; }
+  .chip:hover { border-color:var(--accent); }
+  .linkbtn { background:none; border:0; color:var(--accent); font:inherit; font-size:14px;
+             cursor:pointer; padding:0; margin-top:8px; }
+  footer { margin-top:48px; color:var(--muted); font-size:12px; }
+  footer a { color:inherit; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Genus <span style="font-weight:400;color:var(--muted)">— der, die, das</span></h1>
+  <input id="q" type="text" maxlength="50" autocomplete="off" autocapitalize="off"
+         spellcheck="false" placeholder="δέντρο, dentro, tree, Baum …" autofocus>
+  <div class="hint">Greek, Greeklish, English or German → German noun with article</div>
+  <div id="out" aria-live="polite"></div>
+  <footer>Dictionary data from <a href="https://en.wiktionary.org">Wiktionary</a>
+    (CC BY-SA 4.0) via <a href="https://kaikki.org">kaikki.org</a>.</footer>
+</main>
+<script>
+const q = document.getElementById('q');
+const out = document.getElementById('out');
+let timer = null, seq = 0;
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+function formCell(row) {
+  const td = el('td');
+  td.append(el('span', 'art-' + artClass(row.article), row.article), ' ' + row.forms[0]);
+  if (row.forms.length > 1) td.append(el('span', 'alt', ' / ' + row.forms.slice(1).join(' / ')));
+  return td;
+}
+const artClass = a => ({der: 'der', den: 'der', dem: 'der', des: 'der',
+                        die: 'die', das: 'das'}[a] || 'der');
+
+function declensionTable(decl, open) {
+  const details = el('details', 'decl');
+  details.open = open;
+  details.append(el('summary', '', 'Deklination'));
+  const table = el('table', 'decl');
+  const head = el('tr');
+  head.append(el('th', '', ''), el('th', '', 'Singular'), el('th', '', 'Plural'));
+  table.append(head);
+  const rows = {};
+  for (const [num, list] of Object.entries(decl)) {
+    for (const row of list) (rows[row.case] = rows[row.case] || {})[num] = row;
+  }
+  for (const c of ['Nominativ', 'Genitiv', 'Dativ', 'Akkusativ']) {
+    if (!rows[c]) continue;
+    const tr = el('tr');
+    tr.append(el('td', 'case', c));
+    for (const num of ['singular', 'plural']) {
+      tr.append(rows[c][num] ? formCell(rows[c][num]) : el('td', '', '–'));
+    }
+    table.append(tr);
+  }
+  details.append(table);
+  return details;
+}
+
+function render(data, query) {
+  out.replaceChildren();
+  if (data.matched_from) {
+    const why = (data.input_lang === 'de' || data.input_lang === 'en') ? `“${query}” → “${data.matched_from}”.` : `Showing result for “${data.matched_from}”.`;
+    out.append(el('div', 'note', why));
+  }
+  for (const r of data.results) {
+    const card = el('div', 'card');
+    const w = el('div', 'word');
+    w.append(el('span', 'art-' + r.article, r.article), ' ' + r.noun);
+    card.append(w);
+    const bits = [];
+    if (r.alternatives && r.alternatives.length) bits.push('also: ' + r.alternatives.join(' / '));
+    if (r.plural) bits.push('plural: ' + r.plural);
+    if (r.from_word) bits.push('from ' + r.from_word);
+    if (r.gloss) bits.push(r.gloss);
+    if (bits.length) card.append(el('div', 'meta', bits.join(' · ')));
+    if (r.declension) card.append(declensionTable(r.declension, data.results.length === 1));
+    out.append(card);
+  }
+  if (data.source === 'llm') {
+    const note = el('div', 'note', 'Not in the dictionary — answer from the AI fallback, double-check it. ');
+    const btn = el('button', 'linkbtn', 'Wrong?');
+    btn.onclick = async () => {
+      await fetch('/api/forget?q=' + encodeURIComponent(query), {method: 'POST'});
+      out.replaceChildren(el('div', 'note', 'Removed from cache.'));
+    };
+    note.append(btn);
+    out.append(note);
+  }
+  if (data.suggestions && data.suggestions.length) {
+    out.append(el('div', 'note', data.results.length ? 'Or did you mean:' : 'Did you mean:'));
+    const chips = el('div', 'chips');
+    for (const s of data.suggestions) {
+      const c = el('button', 'chip', s);
+      c.onclick = () => { q.value = s; search(); };
+      chips.append(c);
+    }
+    out.append(chips);
+  }
+  if (!data.results.length && !(data.suggestions && data.suggestions.length)) {
+    out.append(el('div', 'note', 'No match found.'));
+  }
+}
+
+async function search() {
+  const query = q.value.trim();
+  const mine = ++seq;
+  if (!query) { out.replaceChildren(); return; }
+  try {
+    const res = await fetch('/api/lookup?q=' + encodeURIComponent(query));
+    if (mine !== seq) return;
+    if (res.status === 429) { out.replaceChildren(el('div', 'note', 'Too many requests — wait a moment.')); return; }
+    if (!res.ok) throw new Error(res.status);
+    render(await res.json(), query);
+  } catch (e) {
+    if (mine === seq) out.replaceChildren(el('div', 'note', 'Something went wrong. Try again.'));
+  }
+}
+
+q.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(search, 350); });
+q.addEventListener('keydown', e => { if (e.key === 'Enter') { clearTimeout(timer); search(); } });
+</script>
+</body>
+</html>

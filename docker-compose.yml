@@ -1,0 +1,40 @@
+# Deployed by .github/workflows/ci.yml via the self-hosted runner on the NAS
+# (see DEPLOY.md). The runner checks out the repo and runs
+# `docker compose up --build -d`, so the image is built on the NAS itself.
+#
+# Lives outside the repo, on the NAS (see DEPLOY.md):
+#   /share/Container/genus/words.db   dictionary, built on a Mac and copied over
+#   /share/Container/genus/cache.db   created by the app (cached Gemini answers)
+#   /share/Container/genus/.env       GEMINI_API_KEY etc., never in git
+services:
+  genus:
+    build: .
+    container_name: genus
+    # No host `ports:` on purpose: only cloudflared (over memento-edge) can reach
+    # it, so Cloudflare Access can't be bypassed from the LAN. Add
+    # "8423:8000" here if you want to hit it directly while debugging.
+    expose:
+      - "8000"
+    env_file:
+      - /share/Container/genus/.env
+    volumes:
+      - /share/Container/genus:/data
+    environment:
+      - WORDS_DB=/data/words.db
+      - CACHE_DB=/data/cache.db
+      - TZ=Europe/Athens
+    read_only: true
+    tmpfs:
+      - /tmp
+    restart: unless-stopped
+    networks:
+      - default
+      - edge
+
+# Shared network so the pre-existing cloudflared tunnel container (from the
+# memento compose project) can reach genus directly (origin http://genus:8000).
+# Already created by memento's docker-compose.yml, so it is external here.
+networks:
+  edge:
+    external: true
+    name: memento-edge

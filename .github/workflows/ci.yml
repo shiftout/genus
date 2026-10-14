@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install
+        run: pip install -r requirements.txt pytest
+
+      - name: Tests
+        run: python -m pytest -q
+
+  deploy:
+    name: Build & deploy on NAS
+    # only commits that landed on main and passed tests reach the NAS
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: self-hosted   # picks up the runner installed on the NAS
+
+    steps:
+      - name: Checkout latest code
+        uses: actions/checkout@v4
+
+      - name: Build and restart containers
+        run: docker compose up --build -d --remove-orphans
+
+      - name: Remove unused Docker images
+        run: docker image prune -f
