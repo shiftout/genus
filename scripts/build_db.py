@@ -110,6 +110,35 @@ def all_glosses(entry) -> list:
     return [g for s in (plain or senses) for g in s.get("glosses", [])[:1]]
 
 
+_EXAMPLE_LEN = (12, 100)
+
+
+def pick_example(entry, decl):
+    """First short, translated usage example of a plain sense that mentions the noun.
+
+    Quotations are skipped: they are mostly 19th-century literature in old spelling.
+    """
+    forms = {entry["word"]}
+    for cases in (decl or {}).values():
+        for variants in cases.values():
+            forms.update(variants)
+    words = re.compile(r"\b(?:%s)\b" % "|".join(map(re.escape, sorted(forms, key=len, reverse=True))))
+    senses = [s for s in entry.get("senses", []) if "form-of" not in s.get("tags", [])]
+    plain = [s for s in senses if not (set(s.get("tags", [])) & _MARKED)]
+    for s in plain:
+        for ex in s.get("examples", []):
+            text = (ex.get("text") or "").strip()
+            translation = (ex.get("translation") or ex.get("english") or "").strip()
+            if (ex.get("type") == "example"
+                    and _EXAMPLE_LEN[0] <= len(text) <= _EXAMPLE_LEN[1]
+                    # a full sentence, not a set phrase like "Wasser lassen" (to urinate)
+                    and text[0].isupper() and text[-1] in ".!?"
+                    and translation and not translation.startswith("(please add")
+                    and words.search(text)):
+                return {"text": text, "translation": translation}
+    return None
+
+
 def parse_genders(entry) -> list:
     genders = []
     for ht in entry.get("head_templates", []):
@@ -180,8 +209,9 @@ def german_nouns(path: Path):
         glosses = all_glosses(entry)
         if glosses and _VARIANT_GLOSS.match(glosses[0]):
             continue                       # "obsolete form of Haus" etc.
+        decl = parse_declension(entry)
         yield (word, genders, parse_plural(entry), (glosses[0] if glosses else None),
-               gloss_keys(glosses), entry["_size"], parse_declension(entry))
+               gloss_keys(glosses), entry["_size"], decl, pick_example(entry, decl))
 
 
 # --- pass 3: Greek forms -------------------------------------------------------------
@@ -232,11 +262,12 @@ def build(args) -> None:
     print("pass 1/3: German nouns ...")
     de_rows, de_lemmas, de_by_gloss, de_weight = [], set(), {}, {}
     de_forms, en_rows = [], []
-    for noun_id, (lemma, genders, plural, gloss, keys, size, decl) in enumerate(
+    for noun_id, (lemma, genders, plural, gloss, keys, size, decl, example) in enumerate(
             german_nouns(Path(args.de)), start=1):
         de_rows.append((noun_id, lemma, nz.german_key(lemma), ",".join(genders), plural, gloss,
                         json.dumps(decl, ensure_ascii=False) if decl else None,
-                        math.log10(max(size, 10))))
+                        math.log10(max(size, 10)),
+                        json.dumps(example, ensure_ascii=False) if example else None))
         for forms in (decl or {}).values():
             for variants in forms.values():
                 de_forms += [(v, noun_id) for v in variants]
@@ -246,8 +277,8 @@ def build(args) -> None:
             en_rows.append((k, noun_id, 0.5 * pos - 0.8 * math.log10(max(size, 10))))   # common words first
         de_weight[lemma] = max(de_weight.get(lemma, 0), size)
     conn.executemany(
-        "INSERT INTO de_noun(id, lemma, key, genders, plural, gloss, declension, weight) "
-        "VALUES (?,?,?,?,?,?,?,?)", de_rows
+        "INSERT INTO de_noun(id, lemma, key, genders, plural, gloss, declension, weight, example) "
+        "VALUES (?,?,?,?,?,?,?,?,?)", de_rows
     )
     conn.executemany("INSERT INTO de_form VALUES (?,?)", sorted(set(de_forms)))
     conn.executemany("INSERT INTO en_gloss VALUES (?,?,?)", en_rows)

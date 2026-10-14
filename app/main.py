@@ -66,6 +66,23 @@ def lookup(request: Request, q: str = Query(..., max_length=200)):
     return out.as_dict()
 
 
+@app.get("/api/examples")
+def examples(request: Request, article: str = Query(..., max_length=3),
+             noun: str = Query(..., max_length=60)):
+    """'Beispiele' button: one LLM sentence per case, only for nouns in the dictionary."""
+    if not limiter.allow(client_ip(request)):
+        raise HTTPException(429, "Too many requests, slow down.")
+    if article not in ("der", "die", "das"):
+        raise HTTPException(400, "Unknown article.")
+    table = get_dictionary().declension_for(article, noun)
+    if not table or not table.get("singular"):
+        raise HTTPException(404, "No declension table for this noun.")
+    try:
+        return {"examples": get_llm().examples(article, noun, table)}
+    except LlmUnavailable as exc:
+        raise HTTPException(503, f"Examples unavailable: {exc}.")
+
+
 @app.post("/api/forget")
 def forget(request: Request, q: str = Query(..., max_length=200)):
     """'This answer is wrong' button: drop a cached LLM answer."""

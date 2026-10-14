@@ -1,6 +1,9 @@
+import sqlite3
+
 import pytest
 
-from app import normalize as nz
+from app import db, normalize as nz
+from app.lookup import Dictionary
 
 
 def test_greek_greeklish_collide():
@@ -121,3 +124,20 @@ def test_word_that_is_german_and_english(dictionary):
     assert [r.noun for r in lower.results] == ["Haus", "House"] and lower.input_lang == "en"
     upper = dictionary.lookup("House")
     assert [r.noun for r in upper.results] == ["House", "Haus"] and upper.input_lang == "de"
+
+
+def test_wiktionary_example(dictionary):
+    assert dictionary.lookup("Baum").results[0].example == {
+        "text": "Vögel nisten gern in Bäumen.", "translation": "Birds like to nest in trees."}
+    assert dictionary.lookup("Haus").results[0].example is None
+
+
+def test_old_words_db_without_example_column():
+    """A words.db built before the column existed must keep working (deploy order)."""
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    db.init_schema(conn)
+    conn.execute("ALTER TABLE de_noun DROP COLUMN example")
+    conn.execute("INSERT INTO de_noun(lemma, key, genders, plural, weight) VALUES ('Baum','baum','m','Bäume',3)")
+    r = Dictionary(conn).lookup("Baum").results[0]
+    assert (r.article, r.noun, r.example) == ("der", "Baum", None)

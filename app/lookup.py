@@ -42,6 +42,7 @@ class Result:
     from_word: Optional[str] = None   # Greek lemma, shown when several words sound alike
     declension: Optional[dict] = None  # {"singular": [{case, article, forms}], "plural": [...]}
     alternatives: List[str] = field(default_factory=list)  # other articles, if several genders
+    example: Optional[dict] = None     # {"text", "translation"} from Wiktionary
 
     def as_dict(self) -> dict:
         return self.__dict__.copy()
@@ -109,6 +110,9 @@ def _noun_results(rows, gloss: Optional[str] = None) -> List[Result]:
                 gloss=gloss or row["gloss"],
                 alternatives=[ARTICLE[g] for g in genders[1:]],
                 declension=_declension_table(row["declension"], genders[0]),
+                # words.db built before the example column existed: just no example
+                example=json.loads(row["example"])
+                if "example" in row.keys() and row["example"] else None,
             )
         )
     return out

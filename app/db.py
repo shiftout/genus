@@ -12,7 +12,8 @@ CREATE TABLE IF NOT EXISTS de_noun (
     plural  TEXT,
     gloss   TEXT,
     declension TEXT,                -- JSON: {singular|plural: {case: [forms]}}
-    weight  REAL NOT NULL DEFAULT 0   -- log10 of the Wiktionary entry size (commonness proxy)
+    weight  REAL NOT NULL DEFAULT 0,  -- log10 of the Wiktionary entry size (commonness proxy)
+    example TEXT                      -- JSON: {text, translation}, one Wiktionary usage example
 );
 CREATE INDEX IF NOT EXISTS de_noun_lemma ON de_noun(lemma);
 CREATE INDEX IF NOT EXISTS de_noun_key   ON de_noun(key);

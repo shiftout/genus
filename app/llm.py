@@ -42,6 +42,42 @@ SCHEMA = {
 
 _NOUN_RE = re.compile(r"^[A-ZÄÖÜ][a-zäöüßA-ZÄÖÜ-]{1,39}$")
 
+EXAMPLES_PROMPT = (
+    "Write one short, natural, everyday German sentence (at most 12 words) for each grammatical "
+    "case of the noun “{article} {noun}” in the singular. Each sentence must contain the exact "
+    "phrase given below, unchanged, with that definite article. Do not use contractions such as "
+    "im, am, zum, zur, beim, vom or ins. Plain modern German, suitable for a learner.\n{required}"
+)
+
+EXAMPLES_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {c: {"type": "STRING"} for c in ("nominativ", "akkusativ", "dativ", "genitiv")},
+    "required": ["nominativ", "akkusativ", "dativ", "genitiv"],
+}
+MAX_SENTENCE = 140
+
+
+def valid_examples(data: dict, table: dict) -> List[dict]:
+    """Keep only sentences that really contain the article + form for their case.
+
+    The LLM writes the sentence; the dictionary decides whether its grammar is right.
+    """
+    out = []
+    for row in table.get("singular", []):
+        sentence = data.get(row["case"].casefold())
+        if not isinstance(sentence, str):
+            continue
+        sentence = " ".join(sentence.split())
+        if not sentence or len(sentence) > MAX_SENTENCE:
+            continue
+        for form in row["forms"]:
+            phrase = f"{row['article']} {form}"
+            m = re.search(r"\b%s\b" % re.escape(phrase), sentence, re.IGNORECASE)
+            if m:
+                out.append({"case": row["case"], "sentence": sentence, "phrase": m.group(0)})
+                break
+    return out
+
 
 class LlmUnavailable(Exception):
     pass
@@ -91,7 +127,65 @@ class LlmFallback:
             self.db.commit()
             return True
 
+    def _store(self, q: str, payload) -> None:
+        with self._lock:
+            self.db.execute(
+                "INSERT OR REPLACE INTO llm_cache VALUES (?,?,?)", (q, json.dumps(payload), time.time())
+            )
+            self.db.commit()
+
+    def _generate(self, prompt: str, schema: dict, max_tokens: int, temperature: float) -> dict:
+        try:
+            resp = httpx.post(
+                API_URL.format(model=self.model),
+                headers={"x-goog-api-key": self.api_key},
+                json={
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": {
+                        "temperature": temperature,
+                        "maxOutputTokens": max_tokens,
+                        "responseMimeType": "application/json",
+                        "responseSchema": schema,
+                        # 2.5 models think by default and that eats the output budget
+                        "thinkingConfig": {"thinkingBudget": 0},
+                    },
+                },
+                timeout=15,
+            )
+            resp.raise_for_status()
+            text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+            return json.loads(text)
+        except (httpx.HTTPError, KeyError, IndexError, ValueError) as exc:
+            raise LlmUnavailable(f"upstream error: {type(exc).__name__}") from exc
+
     # -- public --------------------------------------------------------------
+
+    def examples(self, article: str, noun: str, table: dict) -> List[dict]:
+        """One example sentence per singular case, checked against the declension table.
+
+        `article`/`noun` come from the dictionary, never from raw user input.
+        """
+        if not self.enabled:
+            raise LlmUnavailable("no API key configured")
+        q = f"ex:{article} {noun}".casefold()
+        cached = self._cached(q)
+        if cached is not None:
+            return cached
+        if not self._take_budget():
+            raise LlmUnavailable("daily limit reached")
+
+        required = "\n".join(
+            f"- {row['case']}: must contain “{row['article']} {row['forms'][0]}”"
+            for row in table.get("singular", [])
+        )
+        data = self._generate(
+            EXAMPLES_PROMPT.format(article=article, noun=noun, required=required),
+            EXAMPLES_SCHEMA, max_tokens=400, temperature=0.7,
+        )
+        examples = valid_examples(data, table)
+        if examples:   # a total miss stays retryable
+            self._store(q, examples)
+        return examples
 
     def lookup(self, word: str) -> List[Result]:
         if not self.enabled:
@@ -103,35 +197,10 @@ class LlmFallback:
         if not self._take_budget():
             raise LlmUnavailable("daily limit reached")
 
-        try:
-            resp = httpx.post(
-                API_URL.format(model=self.model),
-                headers={"x-goog-api-key": self.api_key},
-                json={
-                    "contents": [{"parts": [{"text": PROMPT.format(word=word)}]}],
-                    "generationConfig": {
-                        "temperature": 0,
-                        "maxOutputTokens": 200,
-                        "responseMimeType": "application/json",
-                        "responseSchema": SCHEMA,
-                    },
-                },
-                timeout=15,
-            )
-            resp.raise_for_status()
-            text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-            data = json.loads(text)
-        except (httpx.HTTPError, KeyError, IndexError, ValueError) as exc:
-            raise LlmUnavailable(f"upstream error: {type(exc).__name__}") from exc
-
+        data = self._generate(PROMPT.format(word=word), SCHEMA, max_tokens=200, temperature=0)
         results = self._to_results(data)
         # Cache hits and clean misses alike, so repeated junk costs nothing.
-        with self._lock:
-            self.db.execute(
-                "INSERT OR REPLACE INTO llm_cache VALUES (?,?,?)",
-                (q, json.dumps(data if results else {"found": False}), time.time()),
-            )
-            self.db.commit()
+        self._store(q, data if results else {"found": False})
         return results
 
     @staticmethod

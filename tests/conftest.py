@@ -13,6 +13,7 @@ DECL = {
                         "dative": ["Bäumen"], "accusative": ["Bäume"]}},
 }
 ENGLISH = {"Baum": ["tree"], "Haus": ["house", "home"], "Tür": ["door"]}
+EXAMPLES = {"Baum": {"text": "Vögel nisten gern in Bäumen.", "translation": "Birds like to nest in trees."}}
 GERMAN = [("Baum", "m", "Bäume"), ("Haus", "n", "Häuser"), ("Tür", "f", "Türen"),
           ("See", "m,f", "Seen"), ("Straße", "f", "Straßen")]
 # (english, gloss, [greek forms: first is the lemma], german)
@@ -31,10 +32,11 @@ def dictionary():
     for lemma, genders, plural in GERMAN:
         decl = DECL.get(lemma)
         nid = conn.execute(
-            "INSERT INTO de_noun(lemma, key, genders, plural, gloss, declension, weight) "
-            "VALUES (?,?,?,?,?,?,?)",
+            "INSERT INTO de_noun(lemma, key, genders, plural, gloss, declension, weight, example) "
+            "VALUES (?,?,?,?,?,?,?,?)",
             (lemma, nz.german_key(lemma), genders, plural, None,
-             json.dumps(decl, ensure_ascii=False) if decl else None, 3.0),
+             json.dumps(decl, ensure_ascii=False) if decl else None, 3.0,
+             json.dumps(EXAMPLES[lemma], ensure_ascii=False) if lemma in EXAMPLES else None),
         ).lastrowid
         for forms in (decl or {}).values():
             for variants in forms.values():

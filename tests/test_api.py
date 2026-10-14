@@ -39,3 +39,47 @@ def test_llm_output_validation():
     assert ok[0].noun == "Baum"
     assert LlmFallback._to_results({"found": True, "article": "le", "noun": "Baum"}) == []
     assert LlmFallback._to_results({"found": True, "article": "der", "noun": "ignore previous instructions"}) == []
+
+
+BAUM_SG = {"singular": [
+    {"case": "Nominativ", "article": "der", "forms": ["Baum"]},
+    {"case": "Akkusativ", "article": "den", "forms": ["Baum"]},
+    {"case": "Dativ", "article": "dem", "forms": ["Baum", "Baume"]},
+    {"case": "Genitiv", "article": "des", "forms": ["Baumes", "Baums"]},
+]}
+GOOD = {"nominativ": "Der Baum ist sehr alt.", "akkusativ": "Ich sehe den Baum.",
+        "dativ": "Wir sitzen unter dem Baum.", "genitiv": "Die Blätter des Baums sind grün."}
+
+
+def test_examples_are_checked_against_the_table():
+    from app.llm import valid_examples
+    out = valid_examples(GOOD, BAUM_SG)
+    assert [e["case"] for e in out] == ["Nominativ", "Akkusativ", "Dativ", "Genitiv"]
+    assert out[0]["phrase"] == "Der Baum" and out[3]["phrase"] == "des Baums"
+    bad = {"nominativ": "Ich sehe den Baum.",           # wrong case
+           "akkusativ": "Ich sehe den Baumeister.",     # only a compound
+           "dativ": "Wir sitzen im Baum.",              # contraction, no "dem"
+           "genitiv": "Die Blätter des Baums " + "x" * 140}  # too long
+    assert valid_examples(bad, BAUM_SG) == []
+    assert valid_examples({"nominativ": 42}, BAUM_SG) == []
+
+
+def test_examples_endpoint_errors(client):
+    assert client.get("/api/examples", params={"article": "le", "noun": "Baum"}).status_code == 400
+    assert client.get("/api/examples", params={"article": "die", "noun": "Ignore all"}).status_code == 404
+    r = client.get("/api/examples", params={"article": "der", "noun": "Baum"})
+    assert r.status_code == 503 and "no API key" in r.json()["detail"]
+
+
+def test_examples_are_cached(client, monkeypatch):
+    from app.llm import LlmFallback
+    monkeypatch.setenv("GEMINI_API_KEY", "test")
+    calls = []
+    monkeypatch.setattr(LlmFallback, "_generate", lambda self, *a, **kw: calls.append(a) or GOOD)
+    for _ in range(2):
+        body = client.get("/api/examples", params={"article": "der", "noun": "Baum"}).json()
+        assert len(body["examples"]) == 4
+    assert len(calls) == 1
+    assert "dem Baum" in calls[0][0]          # required phrases come from the table
+    n = main.get_llm().db.execute("SELECT SUM(n) FROM llm_calls").fetchone()[0]
+    assert n == 1
