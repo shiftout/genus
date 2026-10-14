@@ -3,6 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#fafaf7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#161615" media="(prefers-color-scheme: dark)">
 <title>Genus</title>
 <style>
   :root { --bg:#fafaf7; --fg:#1d1d1b; --muted:#6b6b66; --card:#fff; --line:#e4e4de; --accent:#1f5fbf;
@@ -11,6 +14,7 @@
     :root { --bg:#161615; --fg:#ececE6; --muted:#9a9a93; --card:#1f1f1d; --line:#33332f; --accent:#6ea4f0;
             --der:#6ea4f0; --die:#ef7b6e; --das:#5fc48a; }
   }
+  :root { color-scheme: light dark; }  /* native bits (scrollbars, autofill) follow the theme too */
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--fg);
          font:18px/1.4 system-ui,-apple-system,Segoe UI,sans-serif; }
@@ -22,12 +26,15 @@
   .hint { color:var(--muted); font-size:14px; margin-top:8px; }
   .card { background:var(--card); border:1px solid var(--line); border-radius:12px;
           padding:16px 18px; margin-top:16px; }
+  /* Long compounds (Geschwindigkeitsbegrenzung) must wrap instead of widening the page on phones. */
+  .word, .meta, table.decl td { overflow-wrap:anywhere; hyphens:auto; }
   .word { font-size:30px; font-weight:600; }
   .art-der { color:var(--der); } .art-die { color:var(--die); } .art-das { color:var(--das); }
   .meta { color:var(--muted); font-size:14px; margin-top:4px; }
   details.decl { margin-top:12px; }
   details.decl summary { cursor:pointer; color:var(--accent); font-size:14px; }
-  table.decl { border-collapse:collapse; width:100%; margin-top:8px; font-size:16px; }
+  table.decl { border-collapse:collapse; width:100%; table-layout:fixed; margin-top:8px; font-size:16px; }
+  table.decl th:first-child { width:6.5em; }
   table.decl th { text-align:left; font-weight:500; color:var(--muted); font-size:13px;
                   padding:4px 8px 4px 0; border-bottom:1px solid var(--line); }
   table.decl td { padding:5px 8px 5px 0; border-bottom:1px solid var(--line); vertical-align:top; }
@@ -88,7 +95,7 @@ function declensionTable(decl, open) {
   for (const [num, list] of Object.entries(decl)) {
     for (const row of list) (rows[row.case] = rows[row.case] || {})[num] = row;
   }
-  for (const c of ['Nominativ', 'Genitiv', 'Dativ', 'Akkusativ']) {
+  for (const c of ['Nominativ', 'Akkusativ', 'Dativ', 'Genitiv']) {
     if (!rows[c]) continue;
     const tr = el('tr');
     tr.append(el('td', 'case', c));
@@ -109,6 +116,7 @@ function render(data, query) {
   }
   for (const r of data.results) {
     const card = el('div', 'card');
+    card.lang = 'de';  // lets the browser hyphenate long compounds with German rules
     const w = el('div', 'word');
     w.append(el('span', 'art-' + r.article, r.article), ' ' + r.noun);
     card.append(w);

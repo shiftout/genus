@@ -14,14 +14,14 @@ from . import normalize as nz
 
 ARTICLE = {"m": "der", "f": "die", "n": "das"}
 
-# Standard German order: Nominativ, Genitiv, Dativ, Akkusativ.
-CASES = [("nominative", "Nominativ"), ("genitive", "Genitiv"),
-         ("dative", "Dativ"), ("accusative", "Akkusativ")]
+# Ordered by how often each case comes up, not the textbook N-G-D-A order.
+CASES = [("nominative", "Nominativ"), ("accusative", "Akkusativ"),
+         ("dative", "Dativ"), ("genitive", "Genitiv")]
 DEFINITE = {  # article per case, in CASES order
-    "m": ("der", "des", "dem", "den"),
-    "f": ("die", "der", "der", "die"),
-    "n": ("das", "des", "dem", "das"),
-    "pl": ("die", "der", "den", "die"),
+    "m": ("der", "den", "dem", "des"),
+    "f": ("die", "die", "der", "der"),
+    "n": ("das", "das", "dem", "des"),
+    "pl": ("die", "die", "den", "der"),
 }
 
 # A fuzzy hit is applied automatically only when it is this good and

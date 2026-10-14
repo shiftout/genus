@@ -65,11 +65,11 @@ def test_empty_and_long_input(dictionary):
 def test_declension_table_order_and_articles(dictionary):
     r = dictionary.lookup("Baum").results[0]
     sg = r.declension["singular"]
-    assert [row["case"] for row in sg] == ["Nominativ", "Genitiv", "Dativ", "Akkusativ"]
-    assert [row["article"] for row in sg] == ["der", "des", "dem", "den"]
-    assert sg[1]["forms"] == ["Baumes", "Baums"]
+    assert [row["case"] for row in sg] == ["Nominativ", "Akkusativ", "Dativ", "Genitiv"]
+    assert [row["article"] for row in sg] == ["der", "den", "dem", "des"]
+    assert sg[3]["forms"] == ["Baumes", "Baums"]
     pl = r.declension["plural"]
-    assert [row["article"] for row in pl] == ["die", "der", "den", "die"]
+    assert [row["article"] for row in pl] == ["die", "die", "den", "der"]
     assert pl[2]["forms"] == ["Bäumen"]
 
 
@@ -87,7 +87,7 @@ def test_german_inflected_form_finds_lemma(dictionary):
 
 def test_greek_input_also_gets_declension(dictionary):
     r = dictionary.lookup("δέντρο").results[0]
-    assert r.declension["singular"][3]["article"] == "den"
+    assert r.declension["singular"][1]["article"] == "den"
     assert dictionary.lookup("δέντρο").input_lang is None
 
 
@@ -96,7 +96,7 @@ def test_english_input(dictionary, query):
     out = dictionary.lookup(query)
     assert [(r.article, r.noun) for r in out.results] == [("der", "Baum")]
     assert out.input_lang == "en"
-    assert out.results[0].declension["singular"][3]["article"] == "den"
+    assert out.results[0].declension["singular"][1]["article"] == "den"
 
 
 def test_english_typo_autocorrects(dictionary):
