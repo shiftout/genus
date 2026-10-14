@@ -11,8 +11,8 @@ services:
     build: .
     container_name: genus
     # No host `ports:` on purpose: only cloudflared (over memento-edge) can reach
-    # it, so Cloudflare Access can't be bypassed from the LAN. Add
-    # "8423:8000" here if you want to hit it directly while debugging.
+    # it. The per-IP limits trust the CF-Connecting-IP header, which is only safe
+    # while the tunnel is the sole way in. Add "8423:8000" here only to debug.
     expose:
       - "8000"
     env_file:

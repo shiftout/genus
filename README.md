@@ -19,7 +19,7 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt pytest
 
 Same pipeline as hoi/dentro/memento: GitHub Actions + self-hosted runner on the
 NAS, container `genus` on the shared `memento-edge` network, tunnel origin
-`genus:8000`, hostname `genus.mysynnefo.com`, Cloudflare Access in front.
+`genus:8000`, hostname `genus.mysynnefo.com`, public (no Cloudflare Access).
 Full steps and checklist in [DEPLOY.md](DEPLOY.md).
 
 ## Gemini key
@@ -27,7 +27,10 @@ Full steps and checklist in [DEPLOY.md](DEPLOY.md).
 - Create the key in Google AI Studio; on the NAS it lives in `/share/Container/genus/.env`, never in git.
 - Rotate: create new key → edit that `.env` → recreate the container → delete the old key (DEPLOY.md).
 - Without a key the app runs dictionary-only.
-- `LLM_DAILY_CAP` limits calls per day; answers are cached in `cache.db` next to `words.db`.
+- Use a **free-tier key with no billing** on its Google Cloud project: abuse then means
+  429s until tomorrow, never a bill.
+- `LLM_DAILY_CAP` limits calls per day, `LLM_DAILY_CAP_PER_IP` per visitor; answers are
+  cached in `cache.db` next to `words.db`, and cache hits cost nothing.
   The model name in `.env.example` is a default — check AI Studio for the current free-tier model.
 
 ## Rebuilding the dictionary

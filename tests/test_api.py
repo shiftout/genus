@@ -83,3 +83,20 @@ def test_examples_are_cached(client, monkeypatch):
     assert "dem Baum" in calls[0][0]          # required phrases come from the table
     n = main.get_llm().db.execute("SELECT SUM(n) FROM llm_calls").fetchone()[0]
     assert n == 1
+
+
+def test_one_visitor_cannot_spend_the_whole_budget(client, monkeypatch):
+    from app.llm import LlmFallback
+    monkeypatch.setenv("GEMINI_API_KEY", "test")
+    monkeypatch.setenv("LLM_DAILY_CAP_PER_IP", "1")
+    monkeypatch.setattr(LlmFallback, "_generate", lambda self, *a, **kw: GOOD)
+    get = lambda noun, ip: client.get("/api/examples", params={"article": "der", "noun": noun},
+                                      headers={"cf-connecting-ip": ip})
+    assert get("Baum", "1.1.1.1").status_code == 200
+    assert get("Baum", "1.1.1.1").status_code == 200       # cached: free, not counted
+    main.get_llm().forget("ex:der baum")
+    r = get("Baum", "1.1.1.1")
+    assert r.status_code == 503 and "your daily AI limit" in r.json()["detail"]
+    assert get("Baum", "2.2.2.2").status_code == 200       # others are unaffected
+    n = main.get_llm().db.execute("SELECT SUM(n) FROM llm_calls").fetchone()[0]
+    assert n == 2                                          # the refused call cost nothing

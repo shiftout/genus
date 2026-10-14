@@ -16,6 +16,7 @@ from typing import List, Optional
 import httpx
 
 from .lookup import Result
+from .ratelimit import RateLimiter
 
 API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 ARTICLES = {"der", "die", "das"}
@@ -84,10 +85,13 @@ class LlmUnavailable(Exception):
 
 
 class LlmFallback:
-    def __init__(self, cache_path: str, daily_cap: int = 100):
+    def __init__(self, cache_path: str, daily_cap: int = 100, per_client_cap: int = 10):
         self.api_key = os.environ.get("GEMINI_API_KEY", "").strip()
         self.model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
         self.daily_cap = daily_cap
+        # The app is public: one visitor must not be able to spend the whole daily budget.
+        # In memory, so a restart forgives everyone; the global cap above is persistent.
+        self.per_client = RateLimiter(limit=per_client_cap, window=24 * 3600)
         self._lock = threading.Lock()
         self.db = sqlite3.connect(cache_path, check_same_thread=False)
         self.db.executescript(
@@ -112,20 +116,23 @@ class LlmFallback:
             self.db.execute("DELETE FROM llm_cache WHERE q = ?", (q.casefold(),))
             self.db.commit()
 
-    def _take_budget(self) -> bool:
+    def _take_budget(self, client: str) -> None:
+        """Charge one Gemini call to `client` and to today's global budget, or raise."""
+        # Per-client first, so a client that is over its own limit can't drain the global one.
+        if not self.per_client.allow(client):
+            raise LlmUnavailable("your daily AI limit is reached, try again tomorrow")
         day = time.strftime("%Y-%m-%d", time.gmtime())
         with self._lock:
             row = self.db.execute("SELECT n FROM llm_calls WHERE day = ?", (day,)).fetchone()
             n = row[0] if row else 0
             if n >= self.daily_cap:
-                return False
+                raise LlmUnavailable("daily limit reached")
             self.db.execute(
                 "INSERT INTO llm_calls(day, n) VALUES (?, 1) "
                 "ON CONFLICT(day) DO UPDATE SET n = n + 1",
                 (day,),
             )
             self.db.commit()
-            return True
 
     def _store(self, q: str, payload) -> None:
         with self._lock:
@@ -160,7 +167,7 @@ class LlmFallback:
 
     # -- public --------------------------------------------------------------
 
-    def examples(self, article: str, noun: str, table: dict) -> List[dict]:
+    def examples(self, article: str, noun: str, table: dict, client: str = "unknown") -> List[dict]:
         """One example sentence per singular case, checked against the declension table.
 
         `article`/`noun` come from the dictionary, never from raw user input.
@@ -171,8 +178,7 @@ class LlmFallback:
         cached = self._cached(q)
         if cached is not None:
             return cached
-        if not self._take_budget():
-            raise LlmUnavailable("daily limit reached")
+        self._take_budget(client)
 
         required = "\n".join(
             f"- {row['case']}: must contain “{row['article']} {row['forms'][0]}”"
@@ -187,15 +193,14 @@ class LlmFallback:
             self._store(q, examples)
         return examples
 
-    def lookup(self, word: str) -> List[Result]:
+    def lookup(self, word: str, client: str = "unknown") -> List[Result]:
         if not self.enabled:
             raise LlmUnavailable("no API key configured")
         q = word.casefold()
         cached = self._cached(q)
         if cached is not None:
             return self._to_results(cached)
-        if not self._take_budget():
-            raise LlmUnavailable("daily limit reached")
+        self._take_budget(client)
 
         data = self._generate(PROMPT.format(word=word), SCHEMA, max_tokens=200, temperature=0)
         results = self._to_results(data)

@@ -12,14 +12,14 @@ NAS builds the image in place, behind the shared `cloudflared` tunnel.
 | Network | `memento-edge` (external) |
 | Data | `/share/Container/genus` → `/data` (`words.db`, `cache.db`) |
 | Secrets | `/share/Container/genus/.env` on the NAS, never in git |
-| Auth | Cloudflare Access (email OTP) on `genus.mysynnefo.com` |
+| Auth | None: public on purpose (see step 4 for what limits abuse) |
 
 ## Checklist
 
 - [ ] 1. Create the repo `shiftout/genus` (private) and push
 - [ ] 2. Create `/share/Container/genus` on the NAS, copy `words.db` and create `.env`
 - [ ] 3. Add the tunnel public hostname `genus.mysynnefo.com → genus:8000`
-- [ ] 4. Add the Cloudflare Access application for `genus.mysynnefo.com`
+- [ ] 4. Make sure the Gemini key's Google Cloud project has **no billing** (free tier only)
 - [ ] 5. Deploy the `genus-runner` container in Container Station
 - [ ] 6. Re-run the queued deploy job (or push anything)
 - [ ] 7. `docker network connect memento-edge sweet_bohr` if it 502s
@@ -54,6 +54,7 @@ if empty, or compose refuses to start):
 GEMINI_API_KEY=<key from Google AI Studio>
 GEMINI_MODEL=gemini-2.5-flash
 LLM_DAILY_CAP=100
+LLM_DAILY_CAP_PER_IP=10
 ```
 
 Without a key the app is dictionary-only. `cache.db` is created by the app next
@@ -75,18 +76,25 @@ Zero Trust → Networks → Tunnels → your tunnel → Public Hostname → Add:
 
 The origin is the **container name**, resolved over the shared Docker network.
 
-### 4. Cloudflare Access
+### 4. Public by design: what limits abuse
 
-Zero Trust → Access → Applications → Add → Self-hosted:
+genus has no login (unlike dentro and memento). The dictionary is cheap, local and
+public data anyway, and nothing users type is shown to anyone else. The only thing
+worth abusing is the Gemini key, so that is what is fenced in:
 
-- Domain `genus.mysynnefo.com`
-- Policy: Allow, include your email address(es), login method One-time PIN
-- Set the session duration to the longest allowed
+- **Free-tier key, no billing** on its Google Cloud project. Abuse then ends in
+  429s for the rest of the day, never in a bill. Check this before adding the key.
+- `LLM_DAILY_CAP` (100): Gemini calls per day for everyone together, persisted
+  in `cache.db`. Worst case: AI fallback and "Beispiele" are off until 00:00 UTC.
+- `LLM_DAILY_CAP_PER_IP` (10): per visitor, so one client can't spend the day's
+  budget. In memory; a restart resets it. Cached answers count for neither cap.
+- `RATE_LIMIT_PER_MIN` (30): all API requests per IP.
 
-This is the only thing protecting the Gemini quota (as well as the app's own rate
-limit and the daily cap), so do it before sharing the URL. Unlike dentro and
-memento, genus does not validate the Access JWT itself; it relies on being
-unreachable except through the tunnel, which is why no host port is published.
+The per-IP limits key on `CF-Connecting-IP`, which is only trustworthy because the
+tunnel is the only way in: keep the compose file free of host `ports:`.
+
+If abuse ever shows up anyway, the next step is Cloudflare Turnstile on
+`/api/examples` and the LLM path of `/api/lookup`, not a login.
 
 ### 5. Attach cloudflared to the shared network
 
@@ -146,8 +154,8 @@ Manually: `cd /path/to/genus && docker compose up --build -d`.
 ```bash
 docker exec genus python -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8000/healthz').read())"
 docker logs genus --tail 50
-curl -s -o /dev/null -w '%{http_code}\n' https://genus.mysynnefo.com/healthz   # Access login (302/403), not 200
+curl -s https://genus.mysynnefo.com/healthz   # {"ok":true}
 ```
 
-Then, logged in via the browser: type `dentro` → `der Baum`, `δέντρο` → `der Baum`,
+Then in the browser: type `dentro` → `der Baum`, `δέντρο` → `der Baum`,
 `Baun` → suggestions including `Baum`.

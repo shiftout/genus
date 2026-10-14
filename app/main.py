@@ -34,7 +34,8 @@ def get_dictionary() -> Dictionary:
 def get_llm() -> LlmFallback:
     global _llm
     if _llm is None:
-        _llm = LlmFallback(CACHE_DB, int(os.environ.get("LLM_DAILY_CAP", "100")))
+        _llm = LlmFallback(CACHE_DB, int(os.environ.get("LLM_DAILY_CAP", "100")),
+                           int(os.environ.get("LLM_DAILY_CAP_PER_IP", "10")))
     return _llm
 
 
@@ -56,7 +57,7 @@ def lookup(request: Request, q: str = Query(..., max_length=200)):
 
     # Dictionary has nothing (not even a confident correction): ask the LLM.
     try:
-        results = get_llm().lookup(word)
+        results = get_llm().lookup(word, client_ip(request))
     except LlmUnavailable:
         results = []
     if results:
@@ -78,7 +79,7 @@ def examples(request: Request, article: str = Query(..., max_length=3),
     if not table or not table.get("singular"):
         raise HTTPException(404, "No declension table for this noun.")
     try:
-        return {"examples": get_llm().examples(article, noun, table)}
+        return {"examples": get_llm().examples(article, noun, table, client_ip(request))}
     except LlmUnavailable as exc:
         raise HTTPException(503, f"Examples unavailable: {exc}.")
 
