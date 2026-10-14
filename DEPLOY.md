@@ -47,8 +47,10 @@ ssh <nas> 'mkdir -p /share/Container/genus'
 scp data/words.db <nas>:/share/Container/genus/words.db
 ```
 
-Then on the NAS create `/share/Container/genus/.env` (the file must exist, even
-if empty, or compose refuses to start):
+Then on the NAS create `/share/Container/genus/.env`. The app reads it itself at
+startup (it is mounted as `/data/.env`); it's optional, and without it the app runs
+dictionary-only with default limits. It is not a compose `env_file:` on purpose:
+compose runs inside the CI runner container, which can't see `/share/Container`.
 
 ```
 GEMINI_API_KEY=<key from Google AI Studio>
@@ -61,7 +63,7 @@ Without a key the app is dictionary-only. `cache.db` is created by the app next
 to `words.db`.
 
 **Rotating the key:** create a new key, edit `.env`, then
-`docker compose up -d --force-recreate genus` (or re-run the deploy), then delete
+`docker restart genus`, then delete
 the old key in AI Studio.
 
 **Updating the dictionary:** rebuild on the Mac, `scp` the new `words.db`,

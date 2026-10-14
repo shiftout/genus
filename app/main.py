@@ -14,6 +14,25 @@ from .lookup import Dictionary
 from .ratelimit import RateLimiter
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def load_env_file(path: str) -> None:
+    """Read KEY=VALUE lines into os.environ; variables already set win.
+
+    On the NAS the secrets file sits in the mounted data dir (/data/.env). Compose's
+    own `env_file:` can't be used: compose runs inside the CI runner container, which
+    doesn't see /share/Container, so the app reads the file itself.
+    """
+    if not path or not os.path.isfile(path):
+        return
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        key, sep, value = line.strip().partition("=")
+        if sep and key and not key.startswith("#"):
+            os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
+
+
+load_env_file(os.environ.get("ENV_FILE", ""))
+
 WORDS_DB = os.environ.get("WORDS_DB", str(ROOT / "data" / "words.db"))
 CACHE_DB = os.environ.get("CACHE_DB", str(ROOT / "data" / "cache.db"))
 

@@ -25,7 +25,7 @@ Full steps and checklist in [DEPLOY.md](DEPLOY.md).
 ## Gemini key
 
 - Create the key in Google AI Studio; on the NAS it lives in `/share/Container/genus/.env`, never in git.
-- Rotate: create new key → edit that `.env` → recreate the container → delete the old key (DEPLOY.md).
+- Rotate: create new key → edit that `.env` → `docker restart genus` → delete the old key (DEPLOY.md).
 - Without a key the app runs dictionary-only.
 - Use a **free-tier key with no billing** on its Google Cloud project: abuse then means
   429s until tomorrow, never a bill.

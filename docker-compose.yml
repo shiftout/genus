@@ -15,13 +15,14 @@ services:
     # while the tunnel is the sole way in. Add "8423:8000" here only to debug.
     expose:
       - "8000"
-    env_file:
-      - /share/Container/genus/.env
     volumes:
       - /share/Container/genus:/data
     environment:
       - WORDS_DB=/data/words.db
       - CACHE_DB=/data/cache.db
+      # Secrets (GEMINI_API_KEY ...) live next to words.db; the app reads this file
+      # itself, because `env_file:` would be resolved inside the CI runner container.
+      - ENV_FILE=/data/.env
       - TZ=Europe/Athens
     read_only: true
     tmpfs:

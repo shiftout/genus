@@ -114,3 +114,19 @@ def test_forget_is_limited_and_spares_examples(client, monkeypatch):
     assert client.post("/api/forget", params={"q": "baumm"}, headers=h).status_code == 200
     assert llm._cached("baumm") is None
     assert client.post("/api/forget", params={"q": "x"}, headers=h).status_code == 429
+
+
+def test_env_file_is_read_by_the_app(tmp_path, monkeypatch):
+    env = tmp_path / ".env"
+    env.write_text('# comment\nGENUS_T_A=1\nGENUS_T_B="quoted"\nGENUS_T_C=from-file\nnot a pair\n\n')
+    monkeypatch.delenv("GENUS_T_A", raising=False)
+    monkeypatch.delenv("GENUS_T_B", raising=False)
+    monkeypatch.setenv("GENUS_T_C", "from-env")
+    main.load_env_file(str(env))
+    import os
+    assert (os.environ["GENUS_T_A"], os.environ["GENUS_T_B"]) == ("1", "quoted")
+    assert os.environ["GENUS_T_C"] == "from-env"                 # real env wins
+    for k in ("GENUS_T_A", "GENUS_T_B"):
+        monkeypatch.delenv(k)
+    main.load_env_file(str(tmp_path / "missing"))                # optional file
+    main.load_env_file("")
