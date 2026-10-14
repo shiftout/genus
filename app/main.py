@@ -19,6 +19,8 @@ CACHE_DB = os.environ.get("CACHE_DB", str(ROOT / "data" / "cache.db"))
 
 app = FastAPI(title="Genus", docs_url=None, redoc_url=None, openapi_url=None)
 limiter = RateLimiter(limit=int(os.environ.get("RATE_LIMIT_PER_MIN", "30")))
+# "Wrong?" is rare for a real user; wiping the cache in a loop would force fresh Gemini calls.
+forget_limiter = RateLimiter(limit=5, window=24 * 3600)
 
 _dictionary = None
 _llm = None
@@ -87,7 +89,8 @@ def examples(request: Request, article: str = Query(..., max_length=3),
 @app.post("/api/forget")
 def forget(request: Request, q: str = Query(..., max_length=200)):
     """'This answer is wrong' button: drop a cached LLM answer."""
-    if not limiter.allow(client_ip(request)):
+    ip = client_ip(request)
+    if not limiter.allow(ip) or not forget_limiter.allow(ip):
         raise HTTPException(429, "Too many requests, slow down.")
     get_llm().forget(nz.clean(q))
     return {"ok": True}

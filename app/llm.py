@@ -50,6 +50,7 @@ EXAMPLES_PROMPT = (
     "im, am, zum, zur, beim, vom or ins. Plain modern German, suitable for a learner.\n{required}"
 )
 
+EXAMPLES_KEY = "ex:"   # llm_cache prefix for example sentences
 EXAMPLES_SCHEMA = {
     "type": "OBJECT",
     "properties": {c: {"type": "STRING"} for c in ("nominativ", "akkusativ", "dativ", "genitiv")},
@@ -112,6 +113,9 @@ class LlmFallback:
         return json.loads(row[0]) if row else None
 
     def forget(self, q: str) -> None:
+        """Drop a cached fallback answer ("Wrong?" button). Example sentences are off limits."""
+        if q.casefold().startswith(EXAMPLES_KEY):
+            return
         with self._lock:
             self.db.execute("DELETE FROM llm_cache WHERE q = ?", (q.casefold(),))
             self.db.commit()
@@ -174,7 +178,7 @@ class LlmFallback:
         """
         if not self.enabled:
             raise LlmUnavailable("no API key configured")
-        q = f"ex:{article} {noun}".casefold()
+        q = f"{EXAMPLES_KEY}{article} {noun}".casefold()
         cached = self._cached(q)
         if cached is not None:
             return cached

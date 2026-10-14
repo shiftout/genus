@@ -89,6 +89,8 @@ worth abusing is the Gemini key, so that is what is fenced in:
 - `LLM_DAILY_CAP_PER_IP` (10): per visitor, so one client can't spend the day's
   budget. In memory; a restart resets it. Cached answers count for neither cap.
 - `RATE_LIMIT_PER_MIN` (30): all API requests per IP.
+- "Wrong?" (`/api/forget`): 5 per IP per day, and it only drops fallback answers,
+  never cached example sentences.
 
 The per-IP limits key on `CF-Connecting-IP`, which is only trustworthy because the
 tunnel is the only way in: keep the compose file free of host `ports:`.

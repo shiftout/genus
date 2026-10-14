@@ -94,9 +94,23 @@ def test_one_visitor_cannot_spend_the_whole_budget(client, monkeypatch):
                                       headers={"cf-connecting-ip": ip})
     assert get("Baum", "1.1.1.1").status_code == 200
     assert get("Baum", "1.1.1.1").status_code == 200       # cached: free, not counted
-    main.get_llm().forget("ex:der baum")
+    main.get_llm().db.execute("DELETE FROM llm_cache")    # as if never cached
     r = get("Baum", "1.1.1.1")
     assert r.status_code == 503 and "your daily AI limit" in r.json()["detail"]
     assert get("Baum", "2.2.2.2").status_code == 200       # others are unaffected
     n = main.get_llm().db.execute("SELECT SUM(n) FROM llm_calls").fetchone()[0]
     assert n == 2                                          # the refused call cost nothing
+
+
+def test_forget_is_limited_and_spares_examples(client, monkeypatch):
+    from app.llm import LlmFallback
+    monkeypatch.setattr(main, "forget_limiter", RateLimiter(limit=2, window=86400))
+    llm = main.get_llm()
+    llm._store("ex:der baum", [{"case": "Nominativ", "sentence": "Der Baum ist alt.", "phrase": "Der Baum"}])
+    llm._store("baumm", {"found": False})
+    h = {"cf-connecting-ip": "1.1.1.1"}
+    assert client.post("/api/forget", params={"q": "ex:der baum"}, headers=h).status_code == 200
+    assert llm._cached("ex:der baum") is not None              # examples can't be forgotten
+    assert client.post("/api/forget", params={"q": "baumm"}, headers=h).status_code == 200
+    assert llm._cached("baumm") is None
+    assert client.post("/api/forget", params={"q": "x"}, headers=h).status_code == 429
