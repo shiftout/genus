@@ -1,4 +1,4 @@
-"""Lookup pipeline: exact -> phonetic key -> fuzzy suggestion."""
+"""Lookup pipeline: exact -> phonetic key -> fuzzy suggestion, for nouns and verbs."""
 from __future__ import annotations
 
 import json
@@ -24,6 +24,21 @@ DEFINITE = {  # article per case, in CASES order
     "pl": ("die", "die", "den", "der"),
 }
 
+PERSONS = ("ich", "du", "er/sie/es", "wir", "ihr", "sie/Sie")
+# Helpers for the compound tenses, which the dictionary stores only as their parts.
+AUX = {
+    "haben": {"present": ("habe", "hast", "hat", "haben", "habt", "haben"),
+              "preterite": ("hatte", "hattest", "hatte", "hatten", "hattet", "hatten")},
+    "sein": {"present": ("bin", "bist", "ist", "sind", "seid", "sind"),
+             "preterite": ("war", "warst", "war", "waren", "wart", "waren")},
+}
+WERDEN = ("werde", "wirst", "wird", "werden", "werdet", "werden")
+# (key, label), in display order; simple tenses come from the dictionary
+TENSES = [("present", "Präsens"), ("preterite", "Präteritum"), ("perfect", "Perfekt"),
+          ("pluperfect", "Plusquamperfekt"), ("future", "Futur I"),
+          ("subjunctive-i", "Konjunktiv I"), ("subjunctive-ii", "Konjunktiv II"),
+          ("imperative", "Imperativ")]
+
 # A fuzzy hit is applied automatically only when it is this good and
 # clearly better than the runner-up; otherwise it is only suggested.
 SUGGEST_THRESHOLD = 70
@@ -35,14 +50,16 @@ MAX_RESULTS = 8
 
 @dataclass
 class Result:
-    article: str
-    noun: str
+    article: Optional[str]            # None for verbs
+    noun: str                         # the noun, or a verb's infinitive
     plural: Optional[str] = None
     gloss: Optional[str] = None
     from_word: Optional[str] = None   # Greek lemma, shown when several words sound alike
     declension: Optional[dict] = None  # {"singular": [{case, article, forms}], "plural": [...]}
     alternatives: List[str] = field(default_factory=list)  # other articles, if several genders
     example: Optional[dict] = None     # {"text", "translation"} from Wiktionary
+    pos: str = "noun"                  # "noun" | "verb"
+    conjugation: Optional[dict] = None  # verbs: {"parts": {...}, "tenses": [{name, rows}]}
 
     def as_dict(self) -> dict:
         return self.__dict__.copy()
@@ -95,6 +112,57 @@ def _declension_table(raw: Optional[str], gender: str) -> Optional[dict]:
     return table or None
 
 
+def _conjugation_table(raw: Optional[str]) -> Optional[dict]:
+    if not raw:
+        return None
+    data = json.loads(raw)
+    tenses = dict(data.get("tenses", {}))
+    inf, part = data.get("infinitive"), data.get("participle2")
+    if part:
+        auxes = data.get("auxiliary") or ["haben"]
+        for key, aux_tense in (("perfect", "present"), ("pluperfect", "preterite")):
+            tenses[key] = [[f"{AUX[a][aux_tense][i]} {part}" for a in auxes] for i in range(len(PERSONS))]
+    if inf:
+        tenses["future"] = [[f"{w} {inf}"] for w in WERDEN]
+    out = []
+    for key, label in TENSES:
+        rows = [{"person": PERSONS[i], "forms": forms}
+                for i, forms in enumerate(tenses.get(key) or []) if forms]
+        if rows:
+            out.append({"name": label, "rows": rows})
+    if not out:
+        return None
+
+    def third(key):   # er/sie/es form
+        slots = tenses.get(key) or []
+        return slots[2][0] if len(slots) > 2 and slots[2] else None
+    parts = {"present": third("present"), "preterite": third("preterite"), "perfect": third("perfect")}
+    return {"parts": {k: v for k, v in parts.items() if v}, "tenses": out}
+
+
+def _verb_results(rows, gloss: Optional[str] = None) -> List[Result]:
+    return [
+        Result(
+            article=None,
+            noun=row["lemma"],
+            gloss=gloss or row["gloss"],
+            pos="verb",
+            conjugation=_conjugation_table(row["conjugation"]),
+            example=json.loads(row["example"]) if row["example"] else None,
+        )
+        for row in rows
+    ]
+
+
+def _dedup(results: List[Result]) -> List[Result]:
+    seen, out = set(), []
+    for r in results:
+        if (r.article, r.noun) not in seen:
+            seen.add((r.article, r.noun))
+            out.append(r)
+    return out
+
+
 def _noun_results(rows, gloss: Optional[str] = None) -> List[Result]:
     """`gloss` overrides the noun's own gloss (used when joined through a sense)."""
     out = []
@@ -127,6 +195,9 @@ class Dictionary:
         self._de_weight: Dict[str, float] = {}
         self._en_keys: Dict[str, List[str]] = {}
         self._en_weight: Dict[str, float] = {}
+        # words.db built before verbs were added: nouns only
+        self.has_verbs = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'de_verb'").fetchone() is not None
         self._load_keys()
 
     def _load_keys(self) -> None:
@@ -136,29 +207,42 @@ class Dictionary:
         for r in self.conn.execute("SELECT DISTINCT key, lemma, weight FROM el_form"):
             self._el_keys.setdefault(r["key"], []).append(r["lemma"])
             self._el_weight[r["lemma"]] = r["weight"]
-        for r in self.conn.execute(
-            "SELECT g.gloss, MAX(n.weight) AS w FROM en_gloss g "
-            "JOIN de_noun n ON n.id = g.noun_id GROUP BY g.gloss"
-        ):
-            self._en_keys[r["gloss"]] = [r["gloss"]]
-            self._en_weight[r["gloss"]] = r["w"]
+        en_queries = ["SELECT g.gloss, MAX(n.weight) AS w FROM en_gloss g "
+                      "JOIN de_noun n ON n.id = g.noun_id GROUP BY g.gloss"]
+        if self.has_verbs:
+            for r in self.conn.execute("SELECT key, lemma, weight FROM de_verb"):
+                self._de_keys.setdefault(r["key"], []).append(r["lemma"])
+                self._de_weight[r["lemma"]] = max(self._de_weight.get(r["lemma"], 0), r["weight"])
+            en_queries.append("SELECT g.gloss, MAX(v.weight) AS w FROM en_verb_gloss g "
+                              "JOIN de_verb v ON v.id = g.verb_id GROUP BY g.gloss")
+        for query in en_queries:
+            for r in self.conn.execute(query):
+                self._en_keys[r["gloss"]] = [r["gloss"]]
+                self._en_weight[r["gloss"]] = max(self._en_weight.get(r["gloss"], 0), r["w"])
 
     # -- exact helpers -------------------------------------------------------
 
     def german_exact(self, word: str) -> List[Result]:
-        rows = self.conn.execute(
-            "SELECT * FROM de_noun WHERE lemma = ? COLLATE NOCASE ORDER BY id", (word,)
-        ).fetchall()
-        if not rows:  # an inflected form: Bäume -> Baum
-            rows = self.conn.execute(
-                "SELECT DISTINCT n.* FROM de_form f JOIN de_noun n ON n.id = f.noun_id "
-                "WHERE f.form = ? COLLATE NOCASE ORDER BY n.id", (word,)
-            ).fetchall()
-        if not rows:  # umlaut / ß spelling variants
-            rows = self.conn.execute(
-                "SELECT * FROM de_noun WHERE key = ? ORDER BY id", (nz.german_key(word),)
-            ).fetchall()
-        return _noun_results(rows)
+        """German nouns and verbs: as typed, else an inflected form (Bäume -> Baum,
+        läuft -> laufen), else an umlaut / ß spelling variant."""
+        tables = [("de_noun", "de_form", "noun_id", _noun_results)]
+        if self.has_verbs:
+            tables.append(("de_verb", "de_verb_form", "verb_id", _verb_results))
+        stages = [
+            "SELECT * FROM {t} WHERE lemma = ? COLLATE NOCASE ORDER BY id",
+            "SELECT DISTINCT w.* FROM {f} f JOIN {t} w ON w.id = f.{fk} "
+            "WHERE f.form = ? COLLATE NOCASE ORDER BY w.id",
+            "SELECT * FROM {t} WHERE key = ? ORDER BY id",
+        ]
+        for i, sql in enumerate(stages):
+            arg = nz.german_key(word) if i == 2 else word
+            found = [to_results(self.conn.execute(sql.format(t=t, f=f, fk=fk), (arg,)).fetchall())
+                     for t, f, fk, to_results in tables]
+            if any(found):
+                break
+        nouns, verbs = found[0], (found[1] if len(found) > 1 else [])
+        # German nouns are capitalised: "Laufen" is the noun first, "laufen" the verb
+        return nouns + verbs if word[:1].isupper() else verbs + nouns
 
     def _german_hit(self, res: List[Result], typed: str, **kw) -> Lookup:
         """Input was already German: just the article (and declension), no translation."""
@@ -173,17 +257,24 @@ class Dictionary:
         )
 
     def english_lookup(self, word: str):
-        """English word -> (results, the English form that matched)."""
+        """English word -> (results, the English form that matched). "to run" means verbs only."""
+        verbs_only = word.casefold().startswith("to ")
         for form in _english_variants(word):
-            rows = self.conn.execute(
-                "SELECT n.* FROM en_gloss g JOIN de_noun n ON n.id = g.noun_id "
-                "WHERE g.gloss = ? ORDER BY g.rank, n.id", (form,)
-            ).fetchall()
-            res, seen = [], set()
-            for r in _noun_results(rows):
-                if (r.article, r.noun) not in seen:
-                    seen.add((r.article, r.noun))
-                    res.append(r)
+            ranked = []   # (rank, result): nouns and verbs share one ranking scale
+            if not verbs_only:
+                for row in self.conn.execute(
+                    "SELECT n.*, g.rank AS g_rank FROM en_gloss g JOIN de_noun n ON n.id = g.noun_id "
+                    "WHERE g.gloss = ? ORDER BY g.rank, n.id", (form,)
+                ):
+                    ranked += [(row["g_rank"], r) for r in _noun_results([row])]
+            if self.has_verbs:
+                for row in self.conn.execute(
+                    "SELECT v.*, g.rank AS g_rank FROM en_verb_gloss g JOIN de_verb v ON v.id = g.verb_id "
+                    "WHERE g.gloss = ? ORDER BY g.rank, v.id", (form,)
+                ):
+                    ranked += [(row["g_rank"], r) for r in _verb_results([row])]
+            ranked.sort(key=lambda x: x[0])
+            res = _dedup([r for _, r in ranked])
             if res:
                 return res[:MAX_RESULTS], form
         return [], None
@@ -208,26 +299,22 @@ class Dictionary:
         return list(dict.fromkeys(self._el_keys.get(key, [])))
 
     def greek_to_german(self, lemma: str) -> List[Result]:
-        rows = self.conn.execute(
-            """
-            SELECT DISTINCT s.gloss AS gloss, n.*
+        sql = """
+            SELECT DISTINCT s.gloss AS gloss, de.rank AS t_rank, el.sense_id AS t_sense, w.*
             FROM translation el
             JOIN translation de ON de.sense_id = el.sense_id AND de.lang = 'de'
             JOIN sense s ON s.id = el.sense_id
-            JOIN de_noun n ON n.lemma = de.word
+            JOIN {table} w ON w.lemma = de.word
             WHERE el.lang = 'el' AND el.word = ?
-            ORDER BY de.rank, el.sense_id, n.id
-            """,
-            (lemma,),
-        ).fetchall()
-        results, seen = [], set()
-        for row in rows:
-            for res in _noun_results([row], gloss=row["gloss"]):
-                k = (res.article, res.noun)
-                if k not in seen:
-                    seen.add(k)
-                    results.append(res)
-        return results
+        """
+        tables = [("de_noun", _noun_results)] + ([("de_verb", _verb_results)] if self.has_verbs else [])
+        ranked = []
+        for table, to_results in tables:
+            for row in self.conn.execute(sql.format(table=table), (lemma,)):
+                ranked += [((row["t_rank"], row["t_sense"], row["id"]), r)
+                           for r in to_results([row], gloss=row["gloss"])]
+        ranked.sort(key=lambda x: x[0])
+        return _dedup([r for _, r in ranked])
 
     # -- fuzzy ---------------------------------------------------------------
 
@@ -301,11 +388,7 @@ class Dictionary:
                     r.from_word = lemma
                 combined += res
         if combined:
-            seen, results = set(), []
-            for r in combined:
-                if (r.article, r.noun) not in seen:
-                    seen.add((r.article, r.noun))
-                    results.append(r)
+            results = _dedup(combined)
             if len(used) == 1:
                 for r in results:
                     r.from_word = None

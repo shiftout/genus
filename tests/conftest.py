@@ -21,6 +21,27 @@ SENSES = [
     ("tree", "woody plant", ["δέντρο", "δέντρα", "δένδρο"], ["Baum"]),
     ("house", "building", ["σπίτι", "σπίτια"], ["Haus"]),
     ("door", "entrance", ["πόρτα", "πόρτες"], ["Tür"]),
+    ("run", "move fast", ["τρέχω", "τρέχει", "έτρεξα"], ["laufen"]),
+]
+LAUFEN = {
+    "infinitive": "laufen", "participle1": "laufend", "participle2": "gelaufen", "auxiliary": ["sein"],
+    "subordinate": [],
+    "tenses": {"present": [["laufe"], ["läufst"], ["läuft"], ["laufen"], ["lauft"], ["laufen"]],
+               "preterite": [["lief"], ["liefst"], ["lief"], ["liefen"], ["lieft"], ["liefen"]],
+               "imperative": [[], ["lauf", "laufe"], [], [], ["lauft"], []]},
+}
+ANFANGEN = {
+    "infinitive": "anfangen", "participle2": "angefangen", "auxiliary": ["haben", "sein"],
+    "subordinate": ["anfängt"],
+    "tenses": {"present": [["fange an"], ["fängst an"], ["fängt an"], ["fangen an"], ["fangt an"],
+                           ["fangen an"]]},
+}
+# (lemma, gloss, conjugation, English glosses, example)
+VERBS = [
+    ("laufen", "to walk; to run", LAUFEN, ["run", "walk"],
+     {"text": "Lasst uns etwas schneller laufen.", "translation": "Let's move a little faster."}),
+    ("anfangen", "to begin", ANFANGEN, ["begin", "start"], None),
+    ("heißen", "to be called", None, ["be called"], None),
 ]
 
 
@@ -44,6 +65,17 @@ def dictionary():
                     conn.execute("INSERT INTO de_form VALUES (?,?)", (v, nid))
         for gloss in ENGLISH.get(lemma, []):
             conn.execute("INSERT INTO en_gloss VALUES (?,?,0)", (gloss, nid))
+    for lemma, gloss, conj, english, example in VERBS:
+        vid = conn.execute(
+            "INSERT INTO de_verb(lemma, key, gloss, conjugation, weight, example) VALUES (?,?,?,?,?,?)",
+            (lemma, nz.german_key(lemma), gloss, json.dumps(conj, ensure_ascii=False) if conj else None,
+             3.0, json.dumps(example, ensure_ascii=False) if example else None),
+        ).lastrowid
+        forms = {f for slots in (conj or {}).get("tenses", {}).values() for v in slots for f in v}
+        for f in forms | set((conj or {}).get("subordinate", [])):
+            conn.execute("INSERT INTO de_verb_form VALUES (?,?)", (f, vid))
+        for i, g in enumerate(english):
+            conn.execute("INSERT INTO en_verb_gloss VALUES (?,?,?)", (g, vid, i))
     for en, gloss, greek, german in SENSES:
         sid = conn.execute("INSERT INTO sense(en_lemma, gloss) VALUES (?,?)", (en, gloss)).lastrowid
         conn.execute("INSERT INTO translation VALUES (?,?,?,0)", (sid, "el", greek[0]))

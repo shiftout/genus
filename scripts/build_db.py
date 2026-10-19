@@ -4,8 +4,9 @@
     python scripts/build_db.py --download      # fetch the three JSONL dumps into raw/
     python scripts/build_db.py                 # build from raw/ (default paths)
 
-Greek and German are joined through the translation tables of English noun
-entries ("tree": de Baum, el δέντρο), grouped by translation sense.
+Greek and German are joined through the translation tables of English noun and
+verb entries ("tree": de Baum, el δέντρο; "run": de laufen, el τρέχω), grouped by
+translation sense.
 The dumps are untrusted data: they are only ever parsed as JSON.
 """
 from __future__ import annotations
@@ -65,35 +66,51 @@ def read_jsonl(path: Path, needle: str = ""):
 
 # --- pass 1: English entries -> senses with de/el translations ----------------
 
+POS = ("noun", "verb")
+
+
 def collect_senses(path: Path):
-    """Return {(en_word, sense): {'de': set, 'el': set}}."""
-    groups = {}
+    """Return {pos: {(en_word, sense): {'de': set, 'el': set, 'order': n}}} for nouns and verbs.
+
+    `order` is the sense's position in its entry: "to ingest" comes before "to worry".
+    """
+    groups = {pos: {} for pos in POS}
     for entry in read_jsonl(path, '"translations"'):
-        if entry.get("lang_code") != "en" or entry.get("pos") != "noun":
+        pos = entry.get("pos")
+        if entry.get("lang_code") != "en" or pos not in groups:
             continue
-        for t in entry.get("translations", []):
+        # Most entries keep their translation tables per sense, a few at the top level.
+        tables = entry.get("translations", []) + [
+            t for s in entry.get("senses", []) for t in s.get("translations", [])]
+        order = {}
+        for t in tables:
             lang = t.get("lang_code")
             word = (t.get("word") or "").strip()
             if lang not in ("de", "el") or not word or " " in word:
                 continue
-            g = groups.setdefault((entry["word"], t.get("sense") or ""), {"de": set(), "el": set()})
+            sense = (t.get("sense") or "").split(" — ")[0].strip()   # "to ingest — see also consume"
+            order.setdefault(sense, len(order))
+            g = groups[pos].setdefault((entry["word"], sense),
+                                       {"de": set(), "el": set(), "order": order[sense]})
             g[lang].add(word)
-    return {k: v for k, v in groups.items() if v["de"] and v["el"]}
+    return {pos: {k: v for k, v in g.items() if v["de"] and v["el"]} for pos, g in groups.items()}
 
 
 # --- pass 2: German nouns ---------------------------------------------------------
 
 _PAREN = re.compile(r"\([^)]*\)|\[[^\]]*\]")
 _LEADING = re.compile(r"^(a|an|the)\s+")
+_LEADING_VERB = re.compile(r"^(to)\s+")
 
 
-def gloss_keys(glosses) -> list:
+def gloss_keys(glosses, verb: bool = False) -> list:
     """Short, comparable English gloss strings, best (first sense) first."""
+    leading = _LEADING_VERB if verb else _LEADING
     out = []
     for g in glosses:
         for part in re.split(r"[;,]", _PAREN.sub("", g)):
-            part = _LEADING.sub("", part.strip().lower().rstrip("."))
-            if 3 <= len(part) <= 30 and len(part.split()) <= 3 and part not in out:
+            part = leading.sub("", part.strip().lower().rstrip("."))
+            if (2 if verb else 3) <= len(part) <= 30 and len(part.split()) <= 3 and part not in out:
                 out.append(part)
     return out
 
@@ -107,18 +124,24 @@ _MARKED = {"colloquial", "slang", "dialectal", "archaic", "obsolete", "rare", "v
 def all_glosses(entry) -> list:
     senses = [s for s in entry.get("senses", []) if "form-of" not in s.get("tags", [])]
     plain = [s for s in senses if not (set(s.get("tags", [])) & _MARKED)]
-    return [g for s in (plain or senses) for g in s.get("glosses", [])[:1]]
+    # sein: the auxiliary sense comes first in Wiktionary, "to be" is what people look for
+    plain.sort(key=lambda s: "auxiliary" in s.get("tags", []))
+    # a sense nested under a heading has glosses ["As a copulative verb:", "to be"]
+    glosses = [next((g for g in s.get("glosses", []) if not g.endswith(":")), None)
+               for s in (plain or senses)]
+    return [g for g in glosses if g]
 
 
 _EXAMPLE_LEN = (12, 100)
 
 
-def pick_example(entry, decl):
-    """First short, translated usage example of a plain sense that mentions the noun.
+def pick_example(entry, decl=None, forms=()):
+    """First short, translated usage example of a plain sense that mentions the word.
 
+    `decl` is a noun's declension table, `forms` a verb's conjugated forms.
     Quotations are skipped: they are mostly 19th-century literature in old spelling.
     """
-    forms = {entry["word"]}
+    forms = {entry["word"], *forms}
     for cases in (decl or {}).values():
         for variants in cases.values():
             forms.update(variants)
@@ -214,17 +237,125 @@ def german_nouns(path: Path):
                gloss_keys(glosses), entry["_size"], decl, pick_example(entry, decl))
 
 
+# --- pass 2b: German verbs ---------------------------------------------------------------
+
+# Slot order of every tense list: ich, du, er/sie/es, wir, ihr, sie/Sie.
+PERSONS = [(p, n) for n in ("singular", "plural")
+           for p in ("first-person", "second-person", "third-person")]
+# Simple tenses only; Perfekt, Plusquamperfekt and Futur are put together by the app
+# from the auxiliary, participle and infinitive.
+SIMPLE_TENSES = {   # name: (tags that must be present, tags that must be absent)
+    "present": ({"indicative", "present"}, set()),
+    "preterite": ({"indicative", "preterite"}, set()),
+    "subjunctive-i": ({"subjunctive-i"}, {"future"}),
+    "subjunctive-ii": ({"subjunctive-ii"}, {"future"}),
+    "imperative": ({"imperative"}, set()),
+}
+_VERB_ODD_FORMS = _ODD_FORMS | {"formal", "Northwest-German", "Southern-German", "regional"}
+
+
+def parse_conjugation(entry):
+    """{'infinitive', 'zu', 'participle1', 'participle2', 'auxiliary': [...],
+        'tenses': {name: [[forms] per PERSONS slot]}, 'subordinate': [forms]} or None.
+
+    'subordinate' holds the joined forms of separable verbs (dass er anfängt): searchable,
+    not shown.
+    """
+    out = {"infinitive": entry["word"], "auxiliary": [], "tenses": {}, "subordinate": []}
+    odd = {}   # same shape as tenses, for colloquial/rare forms used only when nothing else exists
+    for f in entry.get("forms", []):
+        tags = set(f.get("tags", []))
+        form = " ".join((f.get("form") or "").split())
+        if not form or form == "-" or "multiword-construction" in tags:
+            continue
+        if "auxiliary" in tags:
+            if not tags & _VERB_ODD_FORMS:
+                out["auxiliary"] += [a for a in re.split(r"\s+or\s+", form)
+                                     if a in ("haben", "sein") and a not in out["auxiliary"]]
+            continue
+        if f.get("source") != "conjugation":
+            continue
+        if "participle" in tags:
+            key = "participle2" if "past" in tags else "participle1" if "present" in tags else None
+            if key and key not in out:
+                out[key] = form
+            continue
+        if "infinitive-zu" in tags:
+            out.setdefault("zu", form)
+            continue
+        if "subordinate-clause" in tags:
+            if form not in out["subordinate"]:
+                out["subordinate"].append(form)
+            continue
+        slot = next((i for i, (p, n) in enumerate(PERSONS) if p in tags and n in tags), None)
+        if slot is None:
+            continue
+        for name, (need, avoid) in SIMPLE_TENSES.items():
+            if need <= tags and not tags & avoid:
+                target = odd if tags & _VERB_ODD_FORMS else out["tenses"]
+                forms = target.setdefault(name, [[] for _ in PERSONS])[slot]
+                if form not in forms:
+                    forms.append(form)
+                break
+    for name, slots in odd.items():
+        mine = out["tenses"].setdefault(name, [[] for _ in PERSONS])
+        for i, forms in enumerate(slots):
+            if not mine[i]:
+                mine[i] = forms
+    if not out["tenses"].get("present"):
+        return None
+    return out
+
+
+def conjugated_forms(conj) -> list:
+    """Every form a user might type for this verb."""
+    if not conj:
+        return []
+    forms = {conj["infinitive"], *conj["subordinate"]}
+    forms |= {conj[k] for k in ("zu", "participle1", "participle2") if k in conj}
+    for slots in conj["tenses"].values():
+        for variants in slots:
+            forms.update(variants)
+    return sorted(forms)
+
+
+def german_verbs(path: Path):
+    for entry in read_jsonl(path, '"pos": "verb"'):
+        if entry.get("lang_code") != "de" or entry.get("pos") != "verb":
+            continue
+        senses = entry.get("senses", [])
+        if not senses or all("form-of" in s.get("tags", []) for s in senses):
+            continue
+        word = entry["word"]
+        if " " in word or not word[:1].islower():
+            continue
+        glosses = all_glosses(entry)
+        if not glosses or _VARIANT_GLOSS.match(glosses[0]):
+            continue
+        conj = parse_conjugation(entry)
+        if not conj:                       # spelling variants ("ässe") and stubs: no table
+            continue
+        forms = conjugated_forms(conj)
+        # separable verbs: "fängt an" -> also look for "fängt" in example sentences
+        words = {w for f in forms for w in f.split()[:1]}
+        yield (word, glosses[0], gloss_keys(glosses, verb=True), entry["_size"], conj, forms,
+               pick_example(entry, forms=words))
+
+
 # --- pass 3: Greek forms -------------------------------------------------------------
 
-def greek_nouns(path: Path):
-    """Return (lemmas, form_links).
+_GREEK_VERB_SKIP = {"romanization", "table-tags", "inflection-template"}
+
+
+def greek_words(path: Path, pos: str):
+    """Return (lemmas, form_links) for Greek nouns or verbs.
 
     lemmas:     {lemma: (gloss keys, [inflected forms], entry size)}
     form_links: [(inflected form, lemma)] from "form-of" entries
     """
     lemmas, links = {}, []
-    for entry in read_jsonl(path, '"pos": "noun"'):
-        if entry.get("lang_code") != "el" or entry.get("pos") != "noun":
+    for entry in read_jsonl(path, f'"pos": "{pos}"'):
+        if entry.get("lang_code") != "el" or entry.get("pos") != pos:
             continue
         word = entry["word"]
         for s in entry.get("senses", []):
@@ -236,13 +367,16 @@ def greek_nouns(path: Path):
             continue
         forms = [
             f["form"] for f in entry.get("forms", [])
-            if set(f.get("tags", [])) & _GREEK_CASE_TAGS and f.get("form") and " " not in f["form"]
+            if f.get("form") and " " not in f["form"] and (
+                set(f.get("tags", [])) & _GREEK_CASE_TAGS if pos == "noun"
+                else f.get("source") == "conjugation" and not set(f.get("tags", [])) & _GREEK_VERB_SKIP)
         ]
+        keys = gloss_keys(glosses, verb=pos == "verb")
         prev = lemmas.get(word)
         lemmas[word] = (
-            (prev[0] + [g for g in gloss_keys(glosses) if g not in prev[0]], prev[1] + forms,
+            (prev[0] + [g for g in keys if g not in prev[0]], prev[1] + forms,
              prev[2] + entry["_size"])
-            if prev else (gloss_keys(glosses), forms, entry["_size"])
+            if prev else (keys, forms, entry["_size"])
         )
     return lemmas, links
 
@@ -251,53 +385,20 @@ MAX_RANK = 4          # sum of the gloss positions in the Greek and German entri
 MAX_PER_GREEK = 8     # German candidates kept per Greek lemma
 
 
-def build(args) -> None:
-    out = Path(args.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    tmp = out.with_suffix(".tmp")
-    tmp.unlink(missing_ok=True)
-    conn = db.connect(str(tmp))
-    db.init_schema(conn)
-
-    print("pass 1/3: German nouns ...")
-    de_rows, de_lemmas, de_by_gloss, de_weight = [], set(), {}, {}
-    de_forms, en_rows = [], []
-    for noun_id, (lemma, genders, plural, gloss, keys, size, decl, example) in enumerate(
-            german_nouns(Path(args.de)), start=1):
-        de_rows.append((noun_id, lemma, nz.german_key(lemma), ",".join(genders), plural, gloss,
-                        json.dumps(decl, ensure_ascii=False) if decl else None,
-                        math.log10(max(size, 10)),
-                        json.dumps(example, ensure_ascii=False) if example else None))
-        for forms in (decl or {}).values():
-            for variants in forms.values():
-                de_forms += [(v, noun_id) for v in variants]
-        de_lemmas.add(lemma)
-        for pos, k in enumerate(keys):
-            de_by_gloss.setdefault(k, []).append((lemma, pos))
-            en_rows.append((k, noun_id, 0.5 * pos - 0.8 * math.log10(max(size, 10))))   # common words first
-        de_weight[lemma] = max(de_weight.get(lemma, 0), size)
-    conn.executemany(
-        "INSERT INTO de_noun(id, lemma, key, genders, plural, gloss, declension, weight, example) "
-        "VALUES (?,?,?,?,?,?,?,?,?)", de_rows
-    )
-    conn.executemany("INSERT INTO de_form VALUES (?,?)", sorted(set(de_forms)))
-    conn.executemany("INSERT INTO en_gloss VALUES (?,?,?)", en_rows)
-    print(f"  {len(de_rows):,} nouns")
-
-    print("pass 2/3: Greek nouns ...")
-    el_nouns, form_links = greek_nouns(Path(args.el))
-    print(f"  {len(el_nouns):,} lemmas")
-
-    # (a) curated pairs from the English entries' translation tables: rank 0
-    print("pass 3/3: pairing via English translation tables and shared glosses ...")
-    pairs = {}  # greek lemma -> {german lemma: (rank, gloss)}
-    for (en, sense), langs in collect_senses(Path(args.en)).items():
+def pair(curated, el_words, de_lemmas, de_by_gloss, de_weight):
+    """Greek lemma -> {German lemma: (rank, gloss)}, for one part of speech."""
+    # (a) curated pairs from the English entries' translation tables: rank about 0,
+    #     earlier senses and common words first
+    pairs = {}
+    for (en, sense), langs in curated.items():
         for el in langs["el"]:
             for de in langs["de"] & de_lemmas:
-                pairs.setdefault(el, {})[de] = (0, sense or en)
+                rank = 0.1 * min(langs["order"], 5) - 0.15 * math.log10(max(de_weight.get(de, 1), 10))
+                if de not in pairs.get(el, {}) or rank < pairs[el][de][0]:
+                    pairs.setdefault(el, {})[de] = (rank, sense or en)
 
-    # (b) shared English gloss between a Greek lemma and a German noun
-    for el, (keys, _forms, _size) in el_nouns.items():
+    # (b) shared English gloss between a Greek lemma and a German word
+    for el, (keys, _forms, _size) in el_words.items():
         found = {}  # german lemma -> (best position sum, shared gloss count, gloss)
         for el_pos, k in enumerate(keys):
             for de, de_pos in de_by_gloss.get(k, ()):
@@ -312,26 +413,96 @@ def build(args) -> None:
             rank = pos - 0.5 * (shared - 1) - 0.15 * math.log10(max(de_weight.get(de, 1), 10))
             if pos <= MAX_RANK and (de not in pairs.get(el, {}) or rank < pairs[el][de][0]):
                 pairs.setdefault(el, {})[de] = (rank, k)
+    return pairs
 
-    el_lemmas = set()
-    for el, cands in pairs.items():
-        best = sorted(cands.items(), key=lambda kv: (kv[1][0], kv[0]))[:MAX_PER_GREEK]
-        for de, (rank, gloss) in best:
-            sid = conn.execute("INSERT INTO sense(id, en_lemma, gloss) VALUES (NULL,?,?)", (gloss, gloss)).lastrowid
-            conn.execute("INSERT INTO translation VALUES (?,?,?,?)", (sid, "el", el, rank))
-            conn.execute("INSERT INTO translation VALUES (?,?,?,?)", (sid, "de", de, rank))
-        el_lemmas.add(el)
-    print(f"  {len(el_lemmas):,} Greek lemmas with German matches")
 
-    forms = {(el, el) for el in el_lemmas}
-    for el in el_lemmas:
-        if el in el_nouns:
-            forms |= {(f, el) for f in el_nouns[el][1]}
-    forms |= {(f, l) for f, l in form_links if l in el_lemmas}
+def build(args) -> None:
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_suffix(".tmp")
+    tmp.unlink(missing_ok=True)
+    conn = db.connect(str(tmp))
+    db.init_schema(conn)
+    # per part of speech: German lemmas, gloss key -> [(lemma, position)], lemma -> entry size
+    de_lemmas = {pos: set() for pos in POS}
+    de_by_gloss = {pos: {} for pos in POS}
+    de_weight = {pos: {} for pos in POS}
+
+    print("pass 1/4: German nouns ...")
+    de_rows, de_forms, en_rows = [], [], []
+    for noun_id, (lemma, genders, plural, gloss, keys, size, decl, example) in enumerate(
+            german_nouns(Path(args.de)), start=1):
+        de_rows.append((noun_id, lemma, nz.german_key(lemma), ",".join(genders), plural, gloss,
+                        json.dumps(decl, ensure_ascii=False) if decl else None,
+                        math.log10(max(size, 10)),
+                        json.dumps(example, ensure_ascii=False) if example else None))
+        for forms in (decl or {}).values():
+            for variants in forms.values():
+                de_forms += [(v, noun_id) for v in variants]
+        de_lemmas["noun"].add(lemma)
+        for pos, k in enumerate(keys):
+            de_by_gloss["noun"].setdefault(k, []).append((lemma, pos))
+            en_rows.append((k, noun_id, 0.5 * pos - 0.8 * math.log10(max(size, 10))))   # common words first
+        de_weight["noun"][lemma] = max(de_weight["noun"].get(lemma, 0), size)
+    conn.executemany(
+        "INSERT INTO de_noun(id, lemma, key, genders, plural, gloss, declension, weight, example) "
+        "VALUES (?,?,?,?,?,?,?,?,?)", de_rows
+    )
+    conn.executemany("INSERT INTO de_form VALUES (?,?)", sorted(set(de_forms)))
+    conn.executemany("INSERT INTO en_gloss VALUES (?,?,?)", en_rows)
+    print(f"  {len(de_rows):,} nouns")
+
+    print("pass 2/4: German verbs ...")
+    verb_rows, verb_forms, en_rows = [], [], []
+    for verb_id, (lemma, gloss, keys, size, conj, forms, example) in enumerate(
+            german_verbs(Path(args.de)), start=1):
+        verb_rows.append((verb_id, lemma, nz.german_key(lemma), gloss,
+                          json.dumps(conj, ensure_ascii=False) if conj else None,
+                          math.log10(max(size, 10)),
+                          json.dumps(example, ensure_ascii=False) if example else None))
+        verb_forms += [(f, verb_id) for f in forms]
+        de_lemmas["verb"].add(lemma)
+        for pos, k in enumerate(keys):
+            de_by_gloss["verb"].setdefault(k, []).append((lemma, pos))
+            en_rows.append((k, verb_id, 0.5 * pos - 0.8 * math.log10(max(size, 10))))
+        de_weight["verb"][lemma] = max(de_weight["verb"].get(lemma, 0), size)
+    conn.executemany(
+        "INSERT INTO de_verb(id, lemma, key, gloss, conjugation, weight, example) "
+        "VALUES (?,?,?,?,?,?,?)", verb_rows
+    )
+    conn.executemany("INSERT INTO de_verb_form VALUES (?,?)", sorted(set(verb_forms)))
+    conn.executemany("INSERT INTO en_verb_gloss VALUES (?,?,?)", en_rows)
+    print(f"  {len(verb_rows):,} verbs")
+
+    print("pass 3/4: Greek nouns and verbs ...")
+    el_words = {pos: greek_words(Path(args.el), pos) for pos in POS}
+    for pos in POS:
+        print(f"  {len(el_words[pos][0]):,} {pos} lemmas")
+
+    print("pass 4/4: pairing via English translation tables and shared glosses ...")
+    curated = collect_senses(Path(args.en))
+    el_lemmas, forms, el_weight = set(), set(), {}
+    for pos in POS:
+        lemmas, form_links = el_words[pos]
+        pairs = pair(curated[pos], lemmas, de_lemmas[pos], de_by_gloss[pos], de_weight[pos])
+        for el, cands in pairs.items():
+            best = sorted(cands.items(), key=lambda kv: (kv[1][0], kv[0]))[:MAX_PER_GREEK]
+            for de, (rank, gloss) in best:
+                sid = conn.execute("INSERT INTO sense(id, en_lemma, gloss) VALUES (NULL,?,?)", (gloss, gloss)).lastrowid
+                conn.execute("INSERT INTO translation VALUES (?,?,?,?)", (sid, "el", el, rank))
+                conn.execute("INSERT INTO translation VALUES (?,?,?,?)", (sid, "de", de, rank))
+        print(f"  {len(pairs):,} Greek {pos} lemmas with German matches")
+
+        forms |= {(el, el) for el in pairs}
+        for el in pairs:
+            if el in lemmas:
+                forms |= {(f, el) for f in lemmas[el][1]}
+                el_weight[el] = max(el_weight.get(el, 0), lemmas[el][2])
+        forms |= {(f, l) for f, l in form_links if l in pairs}
+        el_lemmas |= set(pairs)
     conn.executemany(
         "INSERT INTO el_form VALUES (?,?,?,?)",
-        [(f, nz.greek_key(f), l, math.log10(max(el_nouns.get(l, (0, 0, 10))[2], 10)))
-         for f, l in sorted(forms)],
+        [(f, nz.greek_key(f), l, math.log10(max(el_weight.get(l, 10), 10))) for f, l in sorted(forms)],
     )
     print(f"  {len(forms):,} forms")
 

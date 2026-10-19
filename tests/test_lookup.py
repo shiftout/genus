@@ -141,3 +141,151 @@ def test_old_words_db_without_example_column():
     conn.execute("INSERT INTO de_noun(lemma, key, genders, plural, weight) VALUES ('Baum','baum','m','Bäume',3)")
     r = Dictionary(conn).lookup("Baum").results[0]
     assert (r.article, r.noun, r.example) == ("der", "Baum", None)
+
+
+# -- verbs -------------------------------------------------------------------
+
+def _verbs(out):
+    return [r.noun for r in out.results if r.pos == "verb"]
+
+
+@pytest.mark.parametrize("query", ["τρέχω", "τρεχω", "έτρεξα", "trecho", "run", "to run",
+                                   "laufen", "läuft", "lief", "Laufen"])
+def test_verb_from_every_input(dictionary, query):
+    out = dictionary.lookup(query)
+    assert _verbs(out)[:1] == ["laufen"]
+    assert out.results[0].article is None
+
+
+def test_conjugation_table(dictionary):
+    conj = dictionary.lookup("laufen").results[0].conjugation
+    assert conj["parts"] == {"present": "läuft", "preterite": "lief", "perfect": "ist gelaufen"}
+    tenses = {t["name"]: t["rows"] for t in conj["tenses"]}
+    assert list(tenses) == ["Präsens", "Präteritum", "Perfekt", "Plusquamperfekt", "Futur I", "Imperativ"]
+    assert tenses["Präsens"][2] == {"person": "er/sie/es", "forms": ["läuft"]}
+    assert tenses["Perfekt"][0]["forms"] == ["bin gelaufen"]
+    assert tenses["Plusquamperfekt"][4]["forms"] == ["wart gelaufen"]
+    assert tenses["Futur I"][1]["forms"] == ["wirst laufen"]
+    assert [r["person"] for r in tenses["Imperativ"]] == ["du", "ihr"]
+
+
+def test_verb_with_two_auxiliaries(dictionary):
+    conj = dictionary.lookup("anfangen").results[0].conjugation
+    perfekt = next(t for t in conj["tenses"] if t["name"] == "Perfekt")
+    assert perfekt["rows"][2]["forms"] == ["hat angefangen", "ist angefangen"]
+
+
+def test_separable_verb_forms(dictionary):
+    for q in ("fängt an", "anfängt"):
+        out = dictionary.lookup(q)
+        assert _verbs(out) == ["anfangen"] and out.matched_from == "anfangen"
+
+
+def test_verb_without_table(dictionary):
+    r = dictionary.lookup("heißen").results[0]
+    assert r.pos == "verb" and r.conjugation is None
+
+
+def test_verb_example_and_gloss(dictionary):
+    r = dictionary.lookup("trecho").results[0]
+    assert r.example["text"].endswith("laufen.")
+    assert r.gloss == "move fast"      # the sense it was paired through
+
+
+def test_english_to_prefers_verbs(dictionary):
+    assert _verbs(dictionary.lookup("to begin")) == ["anfangen"]
+    assert dictionary.lookup("to tree").results == []
+
+
+def test_nouns_unaffected_by_verbs(dictionary):
+    out = dictionary.lookup("tree")
+    assert [(r.article, r.noun, r.pos) for r in out.results] == [("der", "Baum", "noun")]
+
+
+def test_db_without_verb_tables():
+    """words.db built before verbs existed still works (nouns only)."""
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    db.init_schema(conn)
+    conn.executescript("DROP TABLE de_verb; DROP TABLE de_verb_form; DROP TABLE en_verb_gloss;")
+    conn.execute("INSERT INTO de_noun(lemma, key, genders, plural, weight) VALUES ('Baum','baum','m','Bäume',3)")
+    r = Dictionary(conn).lookup("Baum").results[0]
+    assert (r.article, r.noun, r.example) == ("der", "Baum", None)
+
+
+# -- verbs -------------------------------------------------------------------
+
+def _verbs(out):
+    return [r.noun for r in out.results if r.pos == "verb"]
+
+
+@pytest.mark.parametrize("query", ["τρέχω", "τρεχω", "έτρεξα", "trecho", "run", "to run",
+                                   "laufen", "läuft", "lief", "Laufen"])
+def test_verb_from_every_input(dictionary, query):
+    out = dictionary.lookup(query)
+    assert _verbs(out)[:1] == ["laufen"]
+    assert out.results[0].article is None
+
+
+def test_conjugation_table(dictionary):
+    conj = dictionary.lookup("laufen").results[0].conjugation
+    assert conj["parts"] == {"present": "läuft", "preterite": "lief", "perfect": "ist gelaufen"}
+    tenses = {t["name"]: t["rows"] for t in conj["tenses"]}
+    assert list(tenses) == ["Präsens", "Präteritum", "Perfekt", "Plusquamperfekt", "Futur I", "Imperativ"]
+    assert tenses["Präsens"][2] == {"person": "er/sie/es", "forms": ["läuft"]}
+    assert tenses["Perfekt"][0]["forms"] == ["bin gelaufen"]
+    assert tenses["Plusquamperfekt"][4]["forms"] == ["wart gelaufen"]
+    assert tenses["Futur I"][1]["forms"] == ["wirst laufen"]
+    assert [r["person"] for r in tenses["Imperativ"]] == ["du", "ihr"]
+
+
+def test_verb_with_two_auxiliaries(dictionary):
+    conj = dictionary.lookup("anfangen").results[0].conjugation
+    perfekt = next(t for t in conj["tenses"] if t["name"] == "Perfekt")
+    assert perfekt["rows"][2]["forms"] == ["hat angefangen", "ist angefangen"]
+
+
+def test_separable_verb_forms(dictionary):
+    for q in ("fängt an", "anfängt"):
+        out = dictionary.lookup(q)
+        assert _verbs(out) == ["anfangen"] and out.matched_from == "anfangen"
+
+
+def test_verb_without_table(dictionary):
+    r = dictionary.lookup("heißen").results[0]
+    assert r.pos == "verb" and r.conjugation is None
+
+
+def test_verb_example_and_gloss(dictionary):
+    r = dictionary.lookup("trecho").results[0]
+    assert r.example["text"].endswith("laufen.")
+    assert r.gloss == "move fast"      # the sense it was paired through
+
+
+def test_english_to_prefers_verbs(dictionary):
+    assert _verbs(dictionary.lookup("to begin")) == ["anfangen"]
+    assert dictionary.lookup("to tree").results == []
+
+
+def test_nouns_unaffected_by_verbs(dictionary):
+    out = dictionary.lookup("tree")
+    assert [(r.article, r.noun, r.pos) for r in out.results] == [("der", "Baum", "noun")]
+
+
+def test_db_without_verb_tables():
+    """words.db built before verbs existed still works (nouns only)."""
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.executescript(db.SCHEMA.split("CREATE TABLE IF NOT EXISTS de_verb ")[0])
+    conn.executescript(db.SCHEMA.split("CREATE TABLE IF NOT EXISTS el_form")[1].join(
+        ["CREATE TABLE IF NOT EXISTS el_form", ""]) if False else "")
+    for stmt in ("CREATE TABLE el_form (form, key, lemma, weight)",
+                 "CREATE TABLE sense (id INTEGER PRIMARY KEY, en_lemma, gloss)",
+                 "CREATE TABLE translation (sense_id, lang, word, rank)",
+                 "CREATE TABLE en_gloss (gloss, noun_id, rank)"):
+        conn.execute(stmt)
+    conn.execute("INSERT INTO de_noun(lemma, key, genders, weight) VALUES ('Baum', 'baum', 'm', 1)")
+    d = Dictionary(conn)
+    assert not d.has_verbs
+    assert d.lookup("Baum").results[0].noun == "Baum"
+    assert d.lookup("laufen").results == []

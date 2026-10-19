@@ -29,6 +29,7 @@
   /* Long compounds (Geschwindigkeitsbegrenzung) must wrap instead of widening the page on phones. */
   .word, .meta, table.decl td { overflow-wrap:anywhere; hyphens:auto; }
   .word { font-size:30px; font-weight:600; }
+  .pos { color:var(--muted); font-size:14px; font-weight:400; margin-left:6px; }
   .art-der { color:var(--der); } .art-die { color:var(--die); } .art-das { color:var(--das); }
   .meta { color:var(--muted); font-size:14px; margin-top:4px; }
   details.decl { margin-top:12px; }
@@ -41,6 +42,11 @@
   table.decl td.case { color:var(--muted); font-size:14px; white-space:nowrap; }
   table.decl .alt { color:var(--muted); }
   table.decl tr:last-child td { border-bottom:0; }
+  .tenses { display:flex; flex-wrap:wrap; gap:6px; margin-top:10px; }
+  .tense { border:1px solid var(--line); background:var(--card); color:var(--fg); border-radius:999px;
+           padding:3px 10px; font:inherit; font-size:13px; cursor:pointer; }
+  .tense[aria-pressed="true"] { border-color:var(--accent); color:var(--accent); }
+  table.conj td.case { width:6.5em; }
   .wikt, .examples { margin-top:12px; padding-top:12px; border-top:1px solid var(--line);
                      overflow-wrap:anywhere; hyphens:auto; }
   .wikt-de { font-style:italic; }
@@ -65,8 +71,8 @@
 <main>
   <h1>Genus <span style="font-weight:400;color:var(--muted)">— der, die, das</span></h1>
   <input id="q" type="text" maxlength="50" autocomplete="off" autocapitalize="off"
-         spellcheck="false" placeholder="δέντρο, dentro, tree, Baum …" autofocus>
-  <div class="hint">Greek, Greeklish, English or German → German noun with article</div>
+         spellcheck="false" placeholder="δέντρο, dentro, tree, trexo, laufen …" autofocus>
+  <div class="hint">Greek, Greeklish, English or German → German noun with article, or verb with its tenses</div>
   <div id="out" aria-live="polite"></div>
   <footer>Dictionary data from <a href="https://en.wiktionary.org">Wiktionary</a>
     (CC BY-SA 4.0) via <a href="https://kaikki.org">kaikki.org</a>.</footer>
@@ -151,6 +157,36 @@ function examplesBlock(article, noun) {
   return box;
 }
 
+// Verbs: one tense at a time, so the table fits a phone screen.
+function conjugationTable(conj, open) {
+  const details = el('details', 'decl');
+  details.open = open;
+  details.append(el('summary', '', 'Konjugation'));
+  const tabs = el('div', 'tenses');
+  const table = el('table', 'decl conj');
+  const show = (tense, btn) => {
+    for (const b of tabs.children) b.setAttribute('aria-pressed', b === btn);
+    table.replaceChildren();
+    for (const row of tense.rows) {
+      const tr = el('tr');
+      const td = el('td');
+      td.append(row.forms[0]);
+      if (row.forms.length > 1) td.append(el('span', 'alt', ' / ' + row.forms.slice(1).join(' / ')));
+      tr.append(el('td', 'case', row.person), td);
+      table.append(tr);
+    }
+  };
+  for (const tense of conj.tenses) {
+    const btn = el('button', 'tense', tense.name);
+    btn.type = 'button';
+    btn.onclick = () => show(tense, btn);
+    tabs.append(btn);
+  }
+  details.append(tabs, table);
+  show(conj.tenses[0], tabs.firstChild);
+  return details;
+}
+
 // Panel b: one Wiktionary usage example, when the dictionary has a good one.
 function wiktionaryExample(ex) {
   const box = el('div', 'wikt');
@@ -171,9 +207,12 @@ function render(data, query) {
     const card = el('div', 'card');
     card.lang = 'de';  // lets the browser hyphenate long compounds with German rules
     const w = el('div', 'word');
-    w.append(el('span', 'art-' + r.article, r.article), ' ' + r.noun);
+    if (r.pos === 'verb') w.append(r.noun, el('span', 'pos', 'Verb'));
+    else w.append(el('span', 'art-' + r.article, r.article), ' ' + r.noun);
     card.append(w);
     const bits = [];
+    const parts = r.conjugation && r.conjugation.parts;
+    if (parts) bits.push([parts.present, parts.preterite, parts.perfect].filter(Boolean).join(' · '));
     if (r.alternatives && r.alternatives.length) bits.push('also: ' + r.alternatives.join(' / '));
     if (r.plural) bits.push('plural: ' + r.plural);
     if (r.from_word) bits.push('from ' + r.from_word);
@@ -181,6 +220,7 @@ function render(data, query) {
     if (bits.length) card.append(el('div', 'meta', bits.join(' · ')));
     if (r.example) card.append(wiktionaryExample(r.example));
     if (r.declension) card.append(declensionTable(r.declension, data.results.length === 1, r.article, r.noun));
+    if (r.conjugation) card.append(conjugationTable(r.conjugation, data.results.length === 1));
     out.append(card);
   }
   if (data.source === 'llm') {

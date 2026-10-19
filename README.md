@@ -1,7 +1,8 @@
 # Genus
 
 Type a Greek word, Greek in Latin letters (`dentro`), an English word or a German word and get the
-German noun with its article (`der Baum`). Typos get a "did you mean".
+German noun with its article (`der Baum`), or the German verb with its tenses (`τρέχω` → `laufen`:
+läuft · lief · ist gelaufen). Typos get a "did you mean".
 
 Lookup order: offline Wiktionary dictionary → fuzzy/phonetic match → free-tier
 Gemini fallback (optional, cached, capped per day).
@@ -37,6 +38,9 @@ Full steps and checklist in [DEPLOY.md](DEPLOY.md).
 
 `scripts/build_db.py` reads the kaikki.org Wiktionary extracts (English, German,
 Greek editions' JSONL) and writes `data/words.db`. Greek↔German pairs are joined
-through the translation tables of the English entries ("tree" → de: Baum, el: δέντρο).
+through the translation tables of the English entries ("tree" → de: Baum, el: δέντρο;
+"run" → de: laufen, el: τρέχω). Verbs store their simple tenses; Perfekt,
+Plusquamperfekt and Futur I are built by the app from auxiliary + participle.
+A `words.db` built before verbs existed still works, nouns only.
 
 Dictionary data © Wiktionary contributors, CC BY-SA 4.0, via kaikki.org.

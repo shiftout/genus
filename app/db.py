@@ -25,6 +25,25 @@ CREATE TABLE IF NOT EXISTS de_form (
 );
 CREATE INDEX IF NOT EXISTS de_form_form ON de_form(form);
 
+CREATE TABLE IF NOT EXISTS de_verb (
+    id      INTEGER PRIMARY KEY,
+    lemma   TEXT NOT NULL,          -- infinitive, lower case (laufen)
+    key     TEXT NOT NULL,
+    gloss   TEXT,
+    conjugation TEXT,               -- JSON: simple tenses, participles, auxiliary (see build_db)
+    weight  REAL NOT NULL DEFAULT 0,
+    example TEXT
+);
+CREATE INDEX IF NOT EXISTS de_verb_lemma ON de_verb(lemma);
+CREATE INDEX IF NOT EXISTS de_verb_key   ON de_verb(key);
+
+-- Every conjugated form of a German verb -> its infinitive (läuft, fängt an -> laufen, anfangen).
+CREATE TABLE IF NOT EXISTS de_verb_form (
+    form    TEXT NOT NULL,
+    verb_id INTEGER NOT NULL REFERENCES de_verb(id)
+);
+CREATE INDEX IF NOT EXISTS de_verb_form_form ON de_verb_form(form);
+
 -- Every Greek surface form (lemma or inflected) that leads to a lemma
 -- which has at least one German translation.
 CREATE TABLE IF NOT EXISTS el_form (
@@ -46,7 +65,7 @@ CREATE TABLE IF NOT EXISTS sense (
 CREATE TABLE IF NOT EXISTS translation (
     sense_id INTEGER NOT NULL REFERENCES sense(id),
     lang     TEXT NOT NULL,         -- 'de' | 'el'
-    word     TEXT NOT NULL,
+    word     TEXT NOT NULL,         -- German nouns are capitalised, verbs not: the case tells them apart
     rank     REAL NOT NULL DEFAULT 0      -- lower = better match
 );
 CREATE INDEX IF NOT EXISTS translation_word  ON translation(lang, word);
@@ -59,6 +78,14 @@ CREATE TABLE IF NOT EXISTS en_gloss (
     rank    REAL NOT NULL                -- lower = better
 );
 CREATE INDEX IF NOT EXISTS en_gloss_gloss ON en_gloss(gloss);
+
+-- English verb ("run", without "to") -> German verb.
+CREATE TABLE IF NOT EXISTS en_verb_gloss (
+    gloss   TEXT NOT NULL,
+    verb_id INTEGER NOT NULL REFERENCES de_verb(id),
+    rank    REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS en_verb_gloss_gloss ON en_verb_gloss(gloss);
 
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
 """

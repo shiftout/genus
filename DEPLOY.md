@@ -39,7 +39,7 @@ gh repo create shiftout/genus --private --source . --push
 
 ### 2. Data directory, dictionary and secrets
 
-`words.db` (~45 MB) is built on a Mac (the source dumps are ~4.5 GB) and copied over:
+`words.db` (~80 MB) is built on a Mac (the source dumps are ~4.5 GB) and copied over:
 
 ```bash
 .venv/bin/python scripts/build_db.py --download     # once; writes data/words.db
