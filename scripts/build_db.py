@@ -269,9 +269,10 @@ def parse_conjugation(entry):
         if not form or form == "-" or "multiword-construction" in tags:
             continue
         if "auxiliary" in tags:
-            if not tags & _VERB_ODD_FORMS:
-                out["auxiliary"] += [a for a in re.split(r"\s+or\s+", form)
-                                     if a in ("haben", "sein") and a not in out["auxiliary"]]
+            # one entry per auxiliary, tagged; the joined "haben or sein" line carries no tags
+            # and would let a colloquial sein through (anfangen)
+            if form in ("haben", "sein") and form not in out["auxiliary"] and not tags & _VERB_ODD_FORMS:
+                out["auxiliary"].append(form)
             continue
         if f.get("source") != "conjugation":
             continue

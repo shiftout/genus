@@ -44,6 +44,8 @@ ANFANGEN = {"word": "anfangen", "forms": [
     form("fängt an", "present", "singular", "third-person", source=None),   # head line, not the table
     form("haben", "auxiliary", source=None),
     form("sein", "Northwest-German", "auxiliary", "colloquial", source=None),
+    form("haben or sein", "auxiliary"),                                       # joined, untagged
+    form("sein", "Northwest-German", "auxiliary", "colloquial"),
     form("angefangen", "participle", "past"),
     form("anzufangen", "infinitive", "infinitive-zu"),
     form("fängt an", "indicative", "present", "singular", "third-person"),
