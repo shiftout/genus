@@ -119,7 +119,8 @@ def _conjugation_table(raw: Optional[str]) -> Optional[dict]:
     tenses = dict(data.get("tenses", {}))
     inf, part = data.get("infinitive"), data.get("participle2")
     if part:
-        auxes = data.get("auxiliary") or ["haben"]
+        # "haben or sein" (rennen, fahren): sein is the everyday intransitive use, so it leads
+        auxes = sorted(data.get("auxiliary") or ["haben"], key=lambda a: a != "sein")
         for key, aux_tense in (("perfect", "present"), ("pluperfect", "preterite")):
             tenses[key] = [[f"{AUX[a][aux_tense][i]} {part}" for a in auxes] for i in range(len(PERSONS))]
     if inf:
